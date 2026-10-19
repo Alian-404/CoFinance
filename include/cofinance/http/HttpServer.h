@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -26,6 +27,9 @@ class HttpServer : private NonCopyable {
 public:
     explicit HttpServer(HttpServerConfig cfg);
 
+    using HealthCheck = std::function<bool(std::string* err)>;
+    void setHealthCheck(HealthCheck check);
+
     bool init(std::string* err);
     void onConnection(const net::TcpConnectionPtr& connection);
 
@@ -38,6 +42,7 @@ private:
     HttpServerConfig cfg_;
     Router router_;
     std::unique_ptr<StaticFileHandler> static_files_;
+    HealthCheck health_check_;
 };
 
 }  // namespace http

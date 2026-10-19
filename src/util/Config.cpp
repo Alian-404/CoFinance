@@ -182,9 +182,9 @@ void Config::validate(std::vector<std::string>* errors,
         err("log.level=" + get("log.level") + " 不是合法级别（DEBUG/INFO/WARN/ERROR/FATAL/OFF）");
     }
 
-    // P0 阶段还没有数据库模块，凭据缺失只告警；P3 接线后会升级为错误
+    // 凭据缺失时这里只告警；真正启动连接池时仍会 fail fast，避免错误信息丢失上下文
     if (get("db.user").empty() || get("db.password").empty()) {
-        warn("db.user / db.password 未配置（P0 阶段不影响启动，P3 连接数据库时必需）");
+        warn("db.user / db.password 未配置（连接数据库时必需，请检查 config/secrets.conf）");
     }
     if (getInt("db.pool_size", 32) > 100) {
         warn("db.pool_size 大于 100：本机 MySQL max_connections=151，过大的连接池会把数据库自己压垮");

@@ -12,7 +12,7 @@
 | P0 | 工程骨架、配置系统、异步日志、信号处理 | ✅ 已完成（57 个检查点，valgrind 0 泄漏） |
 | P1 | epoll 主从 Reactor + IO 线程组 + 非阻塞 socket | ✅ 已完成（1000 并发连接，valgrind 0 泄漏） |
 | P2 | HTTP 解析 + 路由 + 静态文件 | ✅ 已完成（52 个检查点，keep-alive/pipeline/限制全通过） |
-| P3 | MySQL 连接池 + DAO + 单元测试框架 | ⬜ |
+| P3 | MySQL 连接池 + 预处理语句 + 事务 + 用户 DAO | ✅ 已完成（57 个检查点，valgrind 0 errors） |
 | P4 | 用户系统与鉴权（注册/登录/会话） | ⬜ |
 | P5 | 组与成员（邀请/接受/退出/转让） | ⬜ |
 | P6 | 记账（交易、分摊、分页筛选） | ⬜ |
@@ -33,6 +33,10 @@ sudo apt-get install -y cmake ninja-build pkg-config libmysqlclient-dev \
 cp config/secrets.conf.example config/secrets.conf   # 填入数据库账号密码
 chmod 600 config/secrets.conf
 
+# 建库（只需一次）与建表（可重复执行）
+sudo mysql -e "CREATE DATABASE IF NOT EXISTS cofinance DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
+mysql -ucofinance -p cofinance < sql/schema.sql
+
 # 构建（Debug + ASan/UBSan）
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCOFINANCE_SANITIZE=ON
 cmake --build build -j16
@@ -47,7 +51,8 @@ cmake --build build -j16
 ./build/cofinance_tests                    # P0：配置、日志等 57 个检查点
 ./build/cofinance_net_tests                # P1：socket、eventfd、timerfd、空闲超时 22 个检查点
 ./build/cofinance_http_tests               # P2：解析、路由、静态文件 52 个检查点
-ctest --test-dir build                     # 通过 CTest 运行三组单测
+./build/cofinance_db_tests config/server.conf sql/schema.sql  # P3：连接池/事务/注入 57 个检查点
+ctest --test-dir build                     # 通过 CTest 运行四组单测（需 MySQL）
 
 # P1 集成验收（脚本自动创建临时端口、1000 条连接、回显、CPU 与优雅退出）
 ulimit -n 65535
@@ -61,6 +66,9 @@ cmake -S . -B build-nosan -DCOFINANCE_SANITIZE=OFF && cmake --build build-nosan 
 python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance_echo_server \
     --connections 20 --valgrind --skip-cpu
 python3 tests/integration/p2_http_check.py --binary build-nosan/cofinance --valgrind
+valgrind --leak-check=full --show-leak-kinds=definite,indirect \
+    --errors-for-leak-kinds=definite,indirect --error-exitcode=9 \
+    ./build-nosan/cofinance_db_tests config/server.conf sql/schema.sql
 ```
 
 ## 目录结构
@@ -69,7 +77,7 @@ python3 tests/integration/p2_http_check.py --binary build-nosan/cofinance --valg
 CoFinance/
 ├── CMakeLists.txt          # 核心库、主程序、三组单测与 P1 echo 验收服务
 ├── config/                 # server.conf（可提交）+ secrets.conf（600，已 gitignore）
-├── sql/                    # 建表脚本（P3 起）
+├── sql/schema.sql          # 9 张表的可重复建表脚本
 ├── docs/
 │   └── design.md           # 需求与设计基线
 │                           # （学习/交付类文档不放在仓库里，见下「文档约定」）
@@ -77,11 +85,12 @@ CoFinance/
 ├── src/
 │   ├── main.cpp
 │   ├── net/ http/ ws/      # 网络层与协议层（P1/P2/P9）
-│   ├── db/ service/ api/   # 数据层、业务层、接口层（P3 起）
+│   ├── db/                 # 连接池、预处理语句、事务、DAO（P3）
+│   ├── service/ api/       # 业务层、接口层（P4 起）
 │   ├── ai/                 # LLM 调用（P10）
 │   └── util/               # 配置、日志、通用工具
 ├── tests/
-│   ├── unit/                # P0/P1/P2 单元测试
+│   ├── unit/                # P0/P1/P2/P3 单元测试
 │   └── integration/         # 真实服务验收与 P1 echo 测试服务
 ├── www/                    # 静态文件根目录（P2 先放占位首页，P11 扩展前端）
 └── third_party/            # 第三方单头库（如需 vendor）
@@ -147,3 +156,15 @@ CoFinance/
 - 每连接独立解析上下文；HTTP 层通过弱引用和定时器接入网络层，不破坏 P1 的线程亲和模型。
 
 本机 P2 实测：keep-alive 连续请求、pipeline 双请求、半包请求、Content-Length body、超大 body/header、Transfer-Encoding、408 超时、路径穿越和 HTTP/1.0 关闭语义全部通过；Valgrind `0 errors`、`no leaks are possible`。
+
+## 已实现的技术要点（P3）
+
+- 连接池：启动时预建固定数量连接；互斥锁 + 条件变量管理借还；等待有超时，关闭会唤醒所有等待者。
+- 锁外 IO：持锁只做队列操作，`mysql_ping` 和断线重连都在锁外执行，避免一条慢连接卡住整个池。
+- 预处理语句：参数通过 `mysql_stmt_*` 二进制协议发送，注入串只当普通字符串；结果集按需扩容，支持 NULL。
+- 事务 RAII：`START TRANSACTION` 后必须显式 `commit()`，作用域提前退出时析构自动 `ROLLBACK`。
+- 用户 DAO：`findById`、`findByUsername`、`insert` 全部使用参数化 SQL。
+- 健康检查：`/api/health` 借一条连接执行 `SELECT 1`，成功 200，失败 503。
+- 会话设置：连接统一 `utf8mb4`，数据库会话时区固定为 UTC，金额仍以整数分存储。
+
+本机 P3 实测：schema 连续加载两次成功，9 张表齐全；100 线程并发借还无死锁；连接池耗尽按 80ms 超时返回；连接被 `KILL` 后下一次借出自动重建；Valgrind `0 errors`、definitely/indirectly lost 均为 0。

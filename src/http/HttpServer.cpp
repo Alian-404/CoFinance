@@ -146,6 +146,10 @@ private:
 
 HttpServer::HttpServer(HttpServerConfig cfg) : cfg_(std::move(cfg)) {}
 
+void HttpServer::setHealthCheck(HealthCheck check) {
+    health_check_ = std::move(check);
+}
+
 bool HttpServer::init(std::string* err) {
     static_files_ = std::make_unique<StaticFileHandler>(cfg_.static_root);
     if (!static_files_->init(err)) {
@@ -155,8 +159,16 @@ bool HttpServer::init(std::string* err) {
     router_.add("GET", "/api/ping", [](const HttpRequest&) {
         return HttpResponse::json(200, R"({"code":0,"message":"pong"})");
     });
-    router_.add("GET", "/api/health", [](const HttpRequest&) {
-        return HttpResponse::json(200, R"({"code":0,"status":"ok"})");
+    router_.add("GET", "/api/health", [this](const HttpRequest&) {
+        if (!health_check_) {
+            return HttpResponse::json(200, R"({"code":0,"status":"ok"})");
+        }
+        std::string check_error;
+        if (health_check_(&check_error)) {
+            return HttpResponse::json(200, R"({"code":0,"status":"ok","db":"up"})");
+        }
+        LOG_WARN("健康检查失败：%s", check_error.c_str());
+        return HttpResponse::json(503, R"({"code":503,"status":"degraded","db":"down"})");
     });
     return true;
 }

@@ -1,5 +1,4 @@
-// P0 阶段的极简测试：零第三方依赖的自制断言。
-// P3 引入 doctest 后，这里会替换成 doctest 的 TEST_CASE（保持同样的检查点思路）。
+// 零第三方依赖的极简断言。数据库测试沿用同一风格，CTest 统一负责调度。
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>

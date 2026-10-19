@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "cofinance/db/ConnectionPool.h"
 #include "cofinance/http/HttpServer.h"
 #include "cofinance/net/TcpServer.h"
 #include "cofinance/util/Common.h"
@@ -158,10 +159,30 @@ int main(int argc, char** argv) {
              cofinance::Logger::levelName(log_cfg.level), log_cfg.dir.c_str(),
              log_cfg.queue_size, log_cfg.to_terminal ? "on" : "off");
     LOG_INFO("生效配置（敏感项已打码）:\n%s", cfg.redactedDump().c_str());
-    LOG_INFO("P2 HTTP 层启动：请求状态机 + keep-alive + 路由 + 静态文件");
+    LOG_INFO("P3 数据层启动：MySQL 连接池 + 预处理语句 + 事务守卫");
     LOG_DEBUG("这条 DEBUG 日志用于验证日志级别过滤，生产环境把 log.level 调成 INFO 就不会输出");
 
-    // ---------- 5. HTTP 与主从 Reactor ----------
+    // ---------- 5. MySQL 连接池 ----------
+    cofinance::db::MySqlConfig db_cfg;
+    db_cfg.host = cfg.get("db.host", "127.0.0.1");
+    db_cfg.port = static_cast<unsigned int>(cfg.getInt("db.port", 3306));
+    db_cfg.user = cfg.get("db.user");
+    db_cfg.password = cfg.get("db.password");
+    db_cfg.database = cfg.get("db.name", "cofinance");
+    db_cfg.pool_size = static_cast<std::size_t>(cfg.getInt("db.pool_size", 32));
+    db_cfg.connect_timeout_ms = static_cast<int>(cfg.getInt("db.connect_timeout_ms", 3000));
+    db_cfg.acquire_timeout_ms = static_cast<int>(cfg.getInt("db.acquire_timeout_ms", 3000));
+
+    cofinance::db::ConnectionPool db_pool;
+    if (!db_pool.init(db_cfg, &err)) {
+        LOG_FATAL("数据库初始化失败: %s", err.c_str());
+        cofinance::Logger::instance().shutdown();
+        return EXIT_FAILURE;
+    }
+    LOG_INFO("MySQL 连接池就绪: %s:%u/%s, 连接数=%zu", db_cfg.host.c_str(), db_cfg.port,
+             db_cfg.database.c_str(), db_pool.capacity());
+
+    // ---------- 6. HTTP 与主从 Reactor ----------
     cofinance::http::HttpServerConfig http_cfg;
     http_cfg.header_limit =
         static_cast<std::size_t>(cfg.getInt("server.header_limit_bytes", 8192));
@@ -177,6 +198,9 @@ int main(int argc, char** argv) {
         cofinance::Logger::instance().shutdown();
         return EXIT_FAILURE;
     }
+    http_server.setHealthCheck([&db_pool](std::string* check_err) {
+        return db_pool.healthCheck(check_err);
+    });
 
     cofinance::net::TcpServerConfig net_cfg;
     net_cfg.host = cfg.get("server.host", "0.0.0.0");
@@ -205,7 +229,8 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    // ---------- 6. 优雅退出 ----------
+    // ---------- 7. 优雅退出 ----------
+    db_pool.shutdown();
     LOG_INFO("收到退出信号，开始优雅退出（排空日志队列 → 刷盘 → 关闭文件）");
     const int64_t uptime_ms = cofinance::util::nowUtcMillis() - start_ms;
     LOG_INFO("退出统计: 运行 %lld ms, 累计写日志 %llu 条, 丢弃 %llu 条",

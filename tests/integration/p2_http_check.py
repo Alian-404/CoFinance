@@ -123,7 +123,7 @@ def main() -> int:
 
         sock.sendall(request("/api/health"))
         status, _, body = reader.read_response()
-        assert status == 200 and b'"ok"' in body, (status, body)
+        assert status == 200 and b'"ok"' in body and b'"db":"up"' in body, (status, body)
 
         sock.sendall(request("/"))
         status, headers, body = reader.read_response()
@@ -138,7 +138,7 @@ def main() -> int:
         status1, _, body1 = reader2.read_response()
         status2, headers2, body2 = reader2.read_response()
         assert status1 == 200 and b"pong" in body1
-        assert status2 == 200 and b'"ok"' in body2
+        assert status2 == 200 and b'"ok"' in body2 and b'"db":"up"' in body2
         assert headers2["connection"] == "close"
         print("pipelining 两请求顺序响应: OK")
 

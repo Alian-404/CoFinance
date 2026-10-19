@@ -70,6 +70,11 @@ set(COFINANCE_CORE_SOURCES
     src/http/Router.cpp
     src/http/StaticFileHandler.cpp
     src/http/HttpServer.cpp
+    src/db/MySqlConnection.cpp
+    src/db/PreparedStatement.cpp
+    src/db/ConnectionPool.cpp
+    src/db/TransactionGuard.cpp
+    src/db/UserDao.cpp
 )
 
 add_library(cofinance_core STATIC ${COFINANCE_CORE_SOURCES})
@@ -96,7 +101,7 @@ target_compile_definitions(cofinance PRIVATE
 cofinance_enable_warnings(cofinance)
 
 # ---------------------------------------------------------------------------
-# 单元测试（P0 先用零依赖的极简断言，P3 再换 doctest）
+# 单元测试：保持零第三方依赖的极简断言，避免为测试框架额外引入联网依赖
 # ---------------------------------------------------------------------------
 if(COFINANCE_BUILD_TESTS)
     add_executable(cofinance_tests tests/unit/test_main.cpp)
@@ -111,6 +116,10 @@ if(COFINANCE_BUILD_TESTS)
     target_link_libraries(cofinance_http_tests PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_http_tests)
 
+    add_executable(cofinance_db_tests tests/unit/test_db.cpp)
+    target_link_libraries(cofinance_db_tests PRIVATE cofinance_core)
+    cofinance_enable_warnings(cofinance_db_tests)
+
     add_executable(cofinance_echo_server tests/integration/echo_server_main.cpp)
     target_link_libraries(cofinance_echo_server PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_echo_server)
@@ -119,6 +128,8 @@ if(COFINANCE_BUILD_TESTS)
     add_test(NAME unit COMMAND cofinance_tests)
     add_test(NAME net COMMAND cofinance_net_tests)
     add_test(NAME http COMMAND cofinance_http_tests)
+    add_test(NAME db COMMAND cofinance_db_tests
+        ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
 endif()
 
 message(STATUS "构建类型: ${CMAKE_BUILD_TYPE} | 测试: ${COFINANCE_BUILD_TESTS} | 净化器: ${COFINANCE_SANITIZE}")
