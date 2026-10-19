@@ -22,14 +22,25 @@ struct User {
     int status = 0;
 };
 
-// P3 只提供最基础的读取/插入；注册、登录、会话属于 P4。
+// 用户表的数据访问。业务规则（格式校验、鉴权、会话）在 UserService。
 class UserDao : private NonCopyable {
 public:
     explicit UserDao(MySqlConnection& connection);
 
     bool findById(std::uint64_t id, std::optional<User>* user, std::string* err);
     bool findByUsername(const std::string& username, std::optional<User>* user, std::string* err);
-    bool insert(User& user, std::string* err);
+    bool findActiveById(std::uint64_t id, std::optional<User>* user, std::string* err);
+    bool findActiveByUsername(const std::string& username, std::optional<User>* user,
+                              std::string* err);
+    bool insert(User& user, std::string* err, bool* duplicate = nullptr);
+    bool updateProfile(std::uint64_t id, const std::string& nickname,
+                       const std::string& avatar_url, std::string* err);
+    bool updatePasswordHashIfCurrent(std::uint64_t id, const std::string& expected_hash,
+                                     const std::string& new_hash, bool* updated,
+                                     std::string* err);
+    bool softDelete(std::uint64_t id, std::string* err);
+    bool searchActiveByUsername(const std::string& query, std::uint64_t exclude_id,
+                                std::vector<User>* users, std::string* err);
 
 private:
     bool readOne(const std::string& sql, const std::vector<SqlParam>& params,

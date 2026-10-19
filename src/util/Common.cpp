@@ -86,6 +86,65 @@ bool iequals(const std::string& a, const std::string& b) {
     return true;
 }
 
+std::size_t utf8Length(const std::string& s, bool* valid) {
+    std::size_t count = 0;
+    std::size_t i = 0;
+    while (i < s.size()) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        std::size_t need = 0;
+        std::uint32_t code = 0;
+        if (c < 0x80) {
+            ++i;
+            ++count;
+            continue;
+        } else if ((c & 0xe0) == 0xc0) {
+            need = 1;
+            code = c & 0x1f;
+        } else if ((c & 0xf0) == 0xe0) {
+            need = 2;
+            code = c & 0x0f;
+        } else if ((c & 0xf8) == 0xf0) {
+            need = 3;
+            code = c & 0x07;
+        } else {
+            if (valid != nullptr) {
+                *valid = false;
+            }
+            return 0;
+        }
+        if (i + need >= s.size()) {
+            if (valid != nullptr) {
+                *valid = false;
+            }
+            return 0;
+        }
+        for (std::size_t j = 1; j <= need; ++j) {
+            const unsigned char next = static_cast<unsigned char>(s[i + j]);
+            if ((next & 0xc0) != 0x80) {
+                if (valid != nullptr) {
+                    *valid = false;
+                }
+                return 0;
+            }
+            code = (code << 6) | (next & 0x3f);
+        }
+        const bool overlong = (need == 1 && code < 0x80) || (need == 2 && code < 0x800) ||
+                              (need == 3 && code < 0x10000);
+        if (overlong || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
+            if (valid != nullptr) {
+                *valid = false;
+            }
+            return 0;
+        }
+        i += need + 1;
+        ++count;
+    }
+    if (valid != nullptr) {
+        *valid = true;
+    }
+    return count;
+}
+
 int64_t nowUtcMillis() {
     struct timespec ts {};
     clock_gettime(CLOCK_REALTIME, &ts);

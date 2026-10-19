@@ -29,6 +29,7 @@ public:
 
     using HealthCheck = std::function<bool(std::string* err)>;
     void setHealthCheck(HealthCheck check);
+    void addRoute(std::string method, std::string path, Router::Handler handler);
 
     bool init(std::string* err);
     void onConnection(const net::TcpConnectionPtr& connection);

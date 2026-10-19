@@ -69,7 +69,7 @@ bool MySqlConnection::connect(const MySqlConfig& config, std::string* err) {
 
     if (mysql_real_connect(mysql_, config.host.c_str(), config.user.c_str(),
                            config.password.c_str(), config.database.c_str(), config.port,
-                           nullptr, 0) == nullptr) {
+                           nullptr, CLIENT_FOUND_ROWS) == nullptr) {
         setError("连接 MySQL 失败");
         close();
         if (err != nullptr) {

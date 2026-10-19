@@ -59,6 +59,7 @@ set(COFINANCE_CORE_SOURCES
     src/util/Common.cpp
     src/util/Config.cpp
     src/util/Logger.cpp
+    src/util/Crypto.cpp
     src/net/Socket.cpp
     src/net/Epoller.cpp
     src/net/TimerQueue.cpp
@@ -75,6 +76,9 @@ set(COFINANCE_CORE_SOURCES
     src/db/ConnectionPool.cpp
     src/db/TransactionGuard.cpp
     src/db/UserDao.cpp
+    src/db/SessionDao.cpp
+    src/service/UserService.cpp
+    src/api/UserApi.cpp
 )
 
 add_library(cofinance_core STATIC ${COFINANCE_CORE_SOURCES})
@@ -120,6 +124,10 @@ if(COFINANCE_BUILD_TESTS)
     target_link_libraries(cofinance_db_tests PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_db_tests)
 
+    add_executable(cofinance_auth_tests tests/unit/test_auth.cpp)
+    target_link_libraries(cofinance_auth_tests PRIVATE cofinance_core)
+    cofinance_enable_warnings(cofinance_auth_tests)
+
     add_executable(cofinance_echo_server tests/integration/echo_server_main.cpp)
     target_link_libraries(cofinance_echo_server PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_echo_server)
@@ -129,6 +137,8 @@ if(COFINANCE_BUILD_TESTS)
     add_test(NAME net COMMAND cofinance_net_tests)
     add_test(NAME http COMMAND cofinance_http_tests)
     add_test(NAME db COMMAND cofinance_db_tests
+        ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
+    add_test(NAME auth COMMAND cofinance_auth_tests
         ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
 endif()
 

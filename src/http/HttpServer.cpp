@@ -150,6 +150,10 @@ void HttpServer::setHealthCheck(HealthCheck check) {
     health_check_ = std::move(check);
 }
 
+void HttpServer::addRoute(std::string method, std::string path, Router::Handler handler) {
+    router_.add(std::move(method), std::move(path), std::move(handler));
+}
+
 bool HttpServer::init(std::string* err) {
     static_files_ = std::make_unique<StaticFileHandler>(cfg_.static_root);
     if (!static_files_->init(err)) {

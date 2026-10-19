@@ -23,6 +23,9 @@ std::string toUpper(const std::string& s);
 std::string toLower(const std::string& s);
 bool iequals(const std::string& a, const std::string& b);
 
+// 返回 UTF-8 字符数（不是字节数）；非法编码时 *valid=false。
+std::size_t utf8Length(const std::string& s, bool* valid = nullptr);
+
 // 时间统一 UTC（ADR-14）：存储、日志、接口全都是 UTC，只在展示层做本地化
 int64_t nowUtcMillis();
 int64_t nowMonotonicMillis();

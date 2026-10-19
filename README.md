@@ -13,7 +13,7 @@
 | P1 | epoll 主从 Reactor + IO 线程组 + 非阻塞 socket | ✅ 已完成（1000 并发连接，valgrind 0 泄漏） |
 | P2 | HTTP 解析 + 路由 + 静态文件 | ✅ 已完成（52 个检查点，keep-alive/pipeline/限制全通过） |
 | P3 | MySQL 连接池 + 预处理语句 + 事务 + 用户 DAO | ✅ 已完成（57 个检查点，valgrind 0 errors） |
-| P4 | 用户系统与鉴权（注册/登录/会话） | ⬜ |
+| P4 | 用户系统与鉴权（注册/登录/会话） | ✅ 已完成（86 个检查点，真实 HTTP 全流程通过） |
 | P5 | 组与成员（邀请/接受/退出/转让） | ⬜ |
 | P6 | 记账（交易、分摊、分页筛选） | ⬜ |
 | P7 | 统计与结算（净额、最少笔数转账） | ⬜ |
@@ -52,7 +52,8 @@ cmake --build build -j16
 ./build/cofinance_net_tests                # P1：socket、eventfd、timerfd、空闲超时 22 个检查点
 ./build/cofinance_http_tests               # P2：解析、路由、静态文件 52 个检查点
 ./build/cofinance_db_tests config/server.conf sql/schema.sql  # P3：连接池/事务/注入 57 个检查点
-ctest --test-dir build                     # 通过 CTest 运行四组单测（需 MySQL）
+./build/cofinance_auth_tests config/server.conf sql/schema.sql  # P4：PBKDF2/会话/改密 86 个检查点
+ctest --test-dir build                     # 通过 CTest 运行五组单测（需 MySQL）
 
 # P1 集成验收（脚本自动创建临时端口、1000 条连接、回显、CPU 与优雅退出）
 ulimit -n 65535
@@ -61,11 +62,15 @@ python3 tests/integration/p1_echo_check.py --connections 1000
 # P2 集成验收（keep-alive、pipeline、半包、body、超限、超时、路径穿越）
 python3 tests/integration/p2_http_check.py
 
+# P4 集成验收（注册、登录、Bearer、改密、登出、注销）
+python3 tests/integration/p4_auth_check.py
+
 # 泄漏检查（ASan 与 valgrind 不能同时启用，故单独一个构建目录）
 cmake -S . -B build-nosan -DCOFINANCE_SANITIZE=OFF && cmake --build build-nosan -j16
 python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance_echo_server \
     --connections 20 --valgrind --skip-cpu
 python3 tests/integration/p2_http_check.py --binary build-nosan/cofinance --valgrind
+python3 tests/integration/p4_auth_check.py --binary build-nosan/cofinance --valgrind
 valgrind --leak-check=full --show-leak-kinds=definite,indirect \
     --errors-for-leak-kinds=definite,indirect --error-exitcode=9 \
     ./build-nosan/cofinance_db_tests config/server.conf sql/schema.sql
@@ -75,7 +80,7 @@ valgrind --leak-check=full --show-leak-kinds=definite,indirect \
 
 ```
 CoFinance/
-├── CMakeLists.txt          # 核心库、主程序、三组单测与 P1 echo 验收服务
+├── CMakeLists.txt          # 核心库、主程序、五组单测与 P1 echo 验收服务
 ├── config/                 # server.conf（可提交）+ secrets.conf（600，已 gitignore）
 ├── sql/schema.sql          # 9 张表的可重复建表脚本
 ├── docs/
@@ -90,7 +95,7 @@ CoFinance/
 │   ├── ai/                 # LLM 调用（P10）
 │   └── util/               # 配置、日志、通用工具
 ├── tests/
-│   ├── unit/                # P0/P1/P2/P3 单元测试
+│   ├── unit/                # P0-P4 单元测试
 │   └── integration/         # 真实服务验收与 P1 echo 测试服务
 ├── www/                    # 静态文件根目录（P2 先放占位首页，P11 扩展前端）
 └── third_party/            # 第三方单头库（如需 vendor）
@@ -168,3 +173,16 @@ CoFinance/
 - 会话设置：连接统一 `utf8mb4`，数据库会话时区固定为 UTC，金额仍以整数分存储。
 
 本机 P3 实测：schema 连续加载两次成功，9 张表齐全；100 线程并发借还无死锁；连接池耗尽按 80ms 超时返回；连接被 `KILL` 后下一次借出自动重建；Valgrind `0 errors`、definitely/indirectly lost 均为 0。
+
+## 已实现的技术要点（P4）
+
+- 密码存储：PBKDF2-HMAC-SHA256、10 万次迭代、16 字节随机盐，格式为 `pbkdf2_sha256$迭代$盐$摘要`，比较使用 `CRYPTO_memcmp`。
+- 不透明会话：登录签发 32 字节随机 token，数据库只存 SHA256(token)；支持过期码 `1003`、登出和全设备登出。
+- 滑动续期：会话有效期 7 天；距过期不足 6 天时，活跃请求会顺延到新的 7 天，避免每个请求都写库。
+- 鉴权中间件：`Authorization: Bearer <token>`，无效 token 返回 `1002`，过期 token 返回 `1003`。
+- 用户接口：注册、登录、登出、全设备登出、我的信息、资料修改、用户搜索、修改密码、注销。
+- 改密安全：校验旧密码；事务内更新哈希并吊销其它会话，当前会话保留；用旧哈希做 CAS，避免并发改密覆盖。
+- 注销：用户软删（`status=2, deleted_at`），会话全部吊销；用户名不可被新账号复用。
+- 防枚举：不存在的用户名也执行一次同成本 PBKDF2，避免仅靠响应时间判断账号是否存在。
+
+本机 P4 实测：`cofinance_auth_tests` 86 个检查点通过；真实 HTTP 注册→登录→鉴权→改密→登出→注销全流程通过；P2 回归通过；Valgrind `0 errors`，definitely/indirectly lost 均为 0。

@@ -35,6 +35,7 @@ public:
     std::uint64_t affectedRows() const;
     std::uint64_t lastInsertId() const;
     unsigned int columnCount() const;
+    unsigned int lastErrorCode() const;
     const std::string& lastError() const;
 
 private:

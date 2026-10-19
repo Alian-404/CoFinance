@@ -290,6 +290,10 @@ unsigned int PreparedStatement::columnCount() const {
                : mysql_num_fields(impl_->metadata);
 }
 
+unsigned int PreparedStatement::lastErrorCode() const {
+    return impl_ == nullptr || impl_->statement == nullptr ? 0 : mysql_stmt_errno(impl_->statement);
+}
+
 const std::string& PreparedStatement::lastError() const {
     static const std::string kEmpty;
     return impl_ == nullptr ? kEmpty : impl_->last_error;

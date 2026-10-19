@@ -76,7 +76,23 @@ bool UserDao::findByUsername(const std::string& username, std::optional<User>* u
     return readOne(sql, {SqlParam{username}}, user, err);
 }
 
-bool UserDao::insert(User& user, std::string* err) {
+bool UserDao::findActiveById(std::uint64_t id, std::optional<User>* user, std::string* err) {
+    const std::string sql = std::string("SELECT ") + kUserColumns +
+                            "FROM users WHERE id = ? AND status = 0 AND deleted_at IS NULL";
+    return readOne(sql, {SqlParam{id}}, user, err);
+}
+
+bool UserDao::findActiveByUsername(const std::string& username, std::optional<User>* user,
+                                   std::string* err) {
+    const std::string sql = std::string("SELECT ") + kUserColumns +
+                            "FROM users WHERE username = ? AND status = 0 AND deleted_at IS NULL";
+    return readOne(sql, {SqlParam{username}}, user, err);
+}
+
+bool UserDao::insert(User& user, std::string* err, bool* duplicate) {
+    if (duplicate != nullptr) {
+        *duplicate = false;
+    }
     PreparedStatement statement(
         connection_,
         "INSERT INTO users (username, password_hash, nickname, avatar_url, status) "
@@ -90,10 +106,107 @@ bool UserDao::insert(User& user, std::string* err) {
                          SqlParam{static_cast<std::int64_t>(user.status)}},
                         err) ||
         !statement.execute(err)) {
+        if (duplicate != nullptr) {
+            *duplicate = statement.lastErrorCode() == 1062;
+        }
         return false;
     }
     user.id = statement.lastInsertId();
     return true;
+}
+
+bool UserDao::updateProfile(std::uint64_t id, const std::string& nickname,
+                            const std::string& avatar_url, std::string* err) {
+    PreparedStatement statement(
+        connection_,
+        "UPDATE users SET nickname = ?, avatar_url = ? "
+        "WHERE id = ? AND status = 0 AND deleted_at IS NULL",
+        err);
+    return statement.valid() &&
+           statement.bind({SqlParam{nickname}, SqlParam{avatar_url}, SqlParam{id}}, err) &&
+           statement.execute(err) && statement.affectedRows() == 1;
+}
+
+bool UserDao::updatePasswordHashIfCurrent(std::uint64_t id, const std::string& expected_hash,
+                                          const std::string& new_hash, bool* updated,
+                                          std::string* err) {
+    if (updated != nullptr) {
+        *updated = false;
+    }
+    PreparedStatement statement(
+        connection_,
+        "UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ? "
+        "AND status = 0 AND deleted_at IS NULL",
+        err);
+    if (!statement.valid() ||
+        !statement.bind({SqlParam{new_hash}, SqlParam{id}, SqlParam{expected_hash}}, err) ||
+        !statement.execute(err)) {
+        return false;
+    }
+    if (updated != nullptr) {
+        *updated = statement.affectedRows() == 1;
+    }
+    return true;
+}
+
+bool UserDao::softDelete(std::uint64_t id, std::string* err) {
+    PreparedStatement statement(
+        connection_,
+        "UPDATE users SET status = 2, deleted_at = UTC_TIMESTAMP() "
+        "WHERE id = ? AND deleted_at IS NULL",
+        err);
+    return statement.valid() && statement.bind({SqlParam{id}}, err) &&
+           statement.execute(err) && statement.affectedRows() == 1;
+}
+
+bool UserDao::searchActiveByUsername(const std::string& query, std::uint64_t exclude_id,
+                                     std::vector<User>* users, std::string* err) {
+    if (users == nullptr) {
+        if (err != nullptr) {
+            *err = "UserDao 搜索输出参数为空";
+        }
+        return false;
+    }
+    users->clear();
+
+    std::string pattern;
+    pattern.reserve(query.size() + 2);
+    pattern.push_back('%');
+    for (char c : query) {
+        if (c == '!' || c == '%' || c == '_') {
+            pattern.push_back('!');
+        }
+        pattern.push_back(c);
+    }
+    pattern.push_back('%');
+
+    const std::string sql = std::string("SELECT ") + kUserColumns +
+                            "FROM users WHERE username LIKE ? ESCAPE '!' AND id <> ? "
+                            "AND status = 0 AND deleted_at IS NULL ORDER BY username LIMIT 20";
+    PreparedStatement statement(connection_, sql, err);
+    if (!statement.valid() || !statement.bind({SqlParam{pattern}, SqlParam{exclude_id}}, err) ||
+        !statement.execute(err)) {
+        return false;
+    }
+
+    for (;;) {
+        SqlRow row;
+        bool has_row = false;
+        if (!statement.fetch(&row, &has_row, err)) {
+            return false;
+        }
+        if (!has_row) {
+            return true;
+        }
+        try {
+            users->push_back(rowToUser(row));
+        } catch (const std::exception& e) {
+            if (err != nullptr) {
+                *err = std::string("解析用户行失败：") + e.what();
+            }
+            return false;
+        }
+    }
 }
 
 bool UserDao::readOne(const std::string& sql, const std::vector<SqlParam>& params,
