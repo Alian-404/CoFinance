@@ -1,0 +1,22 @@
+# 构建产物
+build*/
+cmake-build-*/
+compile_commands.json
+*.o
+*.a
+*.so
+
+# 运行时产物
+logs/
+*.log
+core
+core.*
+
+# 敏感配置：绝不进仓库
+config/secrets.conf
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+*.swp
