@@ -59,6 +59,12 @@ set(COFINANCE_CORE_SOURCES
     src/util/Common.cpp
     src/util/Config.cpp
     src/util/Logger.cpp
+    src/net/Socket.cpp
+    src/net/Epoller.cpp
+    src/net/TimerQueue.cpp
+    src/net/EventLoop.cpp
+    src/net/TcpConnection.cpp
+    src/net/TcpServer.cpp
 )
 
 add_library(cofinance_core STATIC ${COFINANCE_CORE_SOURCES})
@@ -88,12 +94,17 @@ cofinance_enable_warnings(cofinance)
 # 单元测试（P0 先用零依赖的极简断言，P3 再换 doctest）
 # ---------------------------------------------------------------------------
 if(COFINANCE_BUILD_TESTS)
-    file(GLOB COFINANCE_TEST_SOURCES tests/unit/*.cpp)
-    add_executable(cofinance_tests ${COFINANCE_TEST_SOURCES})
+    add_executable(cofinance_tests tests/unit/test_main.cpp)
     target_link_libraries(cofinance_tests PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_tests)
+
+    add_executable(cofinance_net_tests tests/unit/test_net.cpp)
+    target_link_libraries(cofinance_net_tests PRIVATE cofinance_core)
+    cofinance_enable_warnings(cofinance_net_tests)
+
     enable_testing()
     add_test(NAME unit COMMAND cofinance_tests)
+    add_test(NAME net COMMAND cofinance_net_tests)
 endif()
 
 message(STATUS "构建类型: ${CMAKE_BUILD_TYPE} | 测试: ${COFINANCE_BUILD_TESTS} | 净化器: ${COFINANCE_SANITIZE}")

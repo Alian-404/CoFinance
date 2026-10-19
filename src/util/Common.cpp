@@ -92,6 +92,12 @@ int64_t nowUtcMillis() {
     return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
 }
 
+int64_t nowMonotonicMillis() {
+    struct timespec ts {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
 std::string formatUtcMillis(int64_t ms, bool with_date) {
     const std::time_t sec = static_cast<std::time_t>(ms / 1000);
     const int milli = static_cast<int>(ms % 1000);

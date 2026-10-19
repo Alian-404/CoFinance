@@ -50,6 +50,7 @@ void testCommonUtil() {
     CHECK(cofinance::util::formatUtcMillis(ms).back() == 'Z');
     CHECK(cofinance::util::utcDateString(ms).size() == 10);
     CHECK(cofinance::util::threadId() > 0);
+    CHECK(cofinance::util::nowMonotonicMillis() > 0);
 }
 
 void testConfigBasic() {

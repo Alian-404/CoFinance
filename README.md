@@ -9,8 +9,8 @@
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| P0 | 工程骨架、配置系统、异步日志、信号处理 | ✅ 已完成（56 个检查点，valgrind 0 泄漏） |
-| P1 | epoll 事件循环 + 线程池 + 非阻塞 socket | ⏳ 进行中 |
+| P0 | 工程骨架、配置系统、异步日志、信号处理 | ✅ 已完成（57 个检查点，valgrind 0 泄漏） |
+| P1 | epoll 主从 Reactor + IO 线程组 + 非阻塞 socket | ✅ 已完成（1000 并发连接，valgrind 0 泄漏） |
 | P2 | HTTP 解析 + 路由 + 静态文件 | ⬜ |
 | P3 | MySQL 连接池 + DAO + 单元测试框架 | ⬜ |
 | P4 | 用户系统与鉴权（注册/登录/会话） | ⬜ |
@@ -44,12 +44,18 @@ cmake --build build -j16
 ## 测试
 
 ```bash
-./build/cofinance_tests                    # 单元测试（沙箱内需 ASAN_OPTIONS=detect_leaks=0）
-ctest --test-dir build                     # 通过 CTest 运行
+./build/cofinance_tests                    # P0：配置、日志等 57 个检查点
+./build/cofinance_net_tests                # P1：socket、eventfd、timerfd、空闲超时 22 个检查点
+ctest --test-dir build                     # 通过 CTest 运行两组单测
+
+# P1 集成验收（脚本自动创建临时端口、1000 条连接、回显、CPU 与优雅退出）
+ulimit -n 65535
+python3 tests/integration/p1_echo_check.py --connections 1000
 
 # 泄漏检查（ASan 与 valgrind 不能同时启用，故单独一个构建目录）
 cmake -S . -B build-nosan -DCOFINANCE_SANITIZE=OFF && cmake --build build-nosan -j16
-timeout -s INT 9 valgrind --leak-check=full --error-exitcode=9 ./build-nosan/cofinance
+python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance \
+    --connections 100 --valgrind --skip-cpu
 ```
 
 ## 目录结构
@@ -69,7 +75,9 @@ CoFinance/
 │   ├── db/ service/ api/   # 数据层、业务层、接口层（P3 起）
 │   ├── ai/                 # LLM 调用（P10）
 │   └── util/               # 配置、日志、通用工具
-├── tests/{unit,integration}/
+├── tests/
+│   ├── unit/                # P0 基础单测 + P1 网络单测
+│   └── integration/         # 启动真实服务做并发与退出验收
 ├── www/                    # 前端静态页（P11）
 └── third_party/            # 第三方单头库（如需 vendor）
 ```
@@ -109,3 +117,17 @@ CoFinance/
 - 异步日志：有界队列 + 单后台线程、分级背压（丢弃并计数 / 等待后同步兜底）、ERROR 立即刷盘、空闲 1s 刷盘、跨天滚动、UTC 时间戳、内核 tid
 - 信号处理：async-signal-safe 的处理器、不设 SA_RESTART、忽略 SIGPIPE、优雅退出（排空队列）
 - 构建：C++17、target-based CMake、`-Werror` 全告警、ASan/UBSan 插桩、valgrind 复核
+
+## 已实现的技术要点（P1）
+
+- 主从 Reactor：主线程只做 `accept`，新连接按 round-robin 投递给 4 个 IO worker；每个 worker 独立持有 epoll。
+- 连接亲和：一条连接从建立到关闭都在同一个 worker 线程读写，避免多线程争抢同一 socket。
+- 非阻塞 + ET：accept 与收发都循环到 `EAGAIN`；写缓冲支持半写续传，只在该连接可写时才注册 `EPOLLOUT`。
+- 跨线程投递：worker 使用 eventfd + 任务队列，主线程绝不直接操作其他线程的连接。
+- 定时器：timerfd + multimap 实现毫秒级 deadline，空闲超时关闭会自动取消并释放连接资源。
+- 背压与保护：单连接输入上限 1 MiB、待发送上限 8 MiB，超限主动断开，避免慢客户端拖垮进程。
+- 优雅退出：停止 accept 后，各 worker 关闭全部连接并 join；SIGINT 退出码为 0。
+
+P1 的应用层仍是临时 echo 协议，仅用于验证网络层；P2 会替换为 HTTP 请求解析与路由。
+
+本机实测（WSL2）：1000 条并发空闲连接稳定；逐连接回显一致；空闲 2 秒仅消耗 0.020 秒 CPU；512 KiB 数据覆盖半写路径；Valgrind `0 errors`、`no leaks are possible`。

@@ -1,15 +1,14 @@
 #include <unistd.h>
 
-#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
-#include <thread>
 #include <vector>
 
+#include "cofinance/net/TcpServer.h"
 #include "cofinance/util/Common.h"
 #include "cofinance/util/Config.h"
 #include "cofinance/util/Logger.h"
@@ -158,21 +157,33 @@ int main(int argc, char** argv) {
              cofinance::Logger::levelName(log_cfg.level), log_cfg.dir.c_str(),
              log_cfg.queue_size, log_cfg.to_terminal ? "on" : "off");
     LOG_INFO("生效配置（敏感项已打码）:\n%s", cfg.redactedDump().c_str());
-    LOG_INFO("P0 骨架就绪：配置 / 异步日志 / 信号处理。P1 会把这个空转循环换成 epoll 事件循环。");
+    LOG_INFO("P1 网络层启动：主从 Reactor + 非阻塞 socket + timerfd 空闲超时，临时协议为原样回显");
     LOG_DEBUG("这条 DEBUG 日志用于验证日志级别过滤，生产环境把 log.level 调成 INFO 就不会输出");
 
-    // ---------- 5. P0 的占位主循环 ----------
-    int64_t last_beat_ms = start_ms;
-    while (g_stop == 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        const int64_t now = cofinance::util::nowUtcMillis();
-        if (now - last_beat_ms >= 5000) {
-            last_beat_ms = now;
-            LOG_INFO("心跳: 已运行 %llds, 已写日志 %llu 条, 队列丢弃 %llu 条",
-                     static_cast<long long>((now - start_ms) / 1000),
-                     static_cast<unsigned long long>(cofinance::Logger::instance().writtenCount()),
-                     static_cast<unsigned long long>(cofinance::Logger::instance().droppedCount()));
-        }
+    // ---------- 5. 主从 Reactor ----------
+    cofinance::net::TcpServerConfig net_cfg;
+    net_cfg.host = cfg.get("server.host", "0.0.0.0");
+    net_cfg.port = static_cast<std::uint16_t>(cfg.getInt("server.port", 9006));
+    net_cfg.backlog = static_cast<int>(cfg.getInt("server.backlog", 512));
+    net_cfg.io_threads = static_cast<int>(cfg.getInt("server.io_threads", 4));
+    net_cfg.max_connections = static_cast<std::size_t>(cfg.getInt("server.max_connections", 20000));
+    net_cfg.idle_timeout_ms =
+        static_cast<int>(cfg.getInt("server.keepalive_timeout_ms", 60000));
+
+    cofinance::net::TcpServer server(net_cfg);
+    if (!server.init(&err)) {
+        LOG_FATAL("网络层初始化失败: %s", err.c_str());
+        cofinance::Logger::instance().shutdown();
+        return EXIT_FAILURE;
+    }
+    LOG_INFO("监听地址: %s:%u", net_cfg.host.c_str(), static_cast<unsigned>(server.port()));
+
+    if (!server.run([]() { return g_stop != 0; }, &err)) {
+        LOG_FATAL("服务运行失败: %s", err.c_str());
+        const int64_t uptime_ms = cofinance::util::nowUtcMillis() - start_ms;
+        LOG_INFO("异常退出统计: 运行 %lld ms", static_cast<long long>(uptime_ms));
+        cofinance::Logger::instance().shutdown();
+        return EXIT_FAILURE;
     }
 
     // ---------- 6. 优雅退出 ----------

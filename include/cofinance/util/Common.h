@@ -25,6 +25,7 @@ bool iequals(const std::string& a, const std::string& b);
 
 // 时间统一 UTC（ADR-14）：存储、日志、接口全都是 UTC，只在展示层做本地化
 int64_t nowUtcMillis();
+int64_t nowMonotonicMillis();
 std::string formatUtcMillis(int64_t ms, bool with_date = true);
 std::string utcDateString(int64_t ms);
 
