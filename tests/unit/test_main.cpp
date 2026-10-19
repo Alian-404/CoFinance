@@ -122,6 +122,7 @@ void testValidate() {
         "server.io_threads=4\n"
         "server.max_connections=20000\n"
         "server.keepalive_timeout_ms=60000\n"
+        "server.request_timeout_ms=10000\n"
         "server.header_limit_bytes=8192\n"
         "server.body_limit_bytes=1048576\n"
         "log.dir=logs\n"
@@ -171,7 +172,7 @@ void testValidate() {
         errors.clear();
         warnings.clear();
         empty.validate(&errors, &warnings);
-        CHECK(errors.size() >= 11);
+        CHECK(errors.size() >= 12);
     }
 
     {

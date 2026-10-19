@@ -21,8 +21,12 @@ namespace net {
 
 class IoWorker : private NonCopyable {
 public:
-    IoWorker(std::size_t index, const TcpServerConfig& cfg, std::function<void()> on_removed)
-        : index_(index), idle_timeout_ms_(cfg.idle_timeout_ms), on_removed_(std::move(on_removed)) {}
+    IoWorker(std::size_t index, const TcpServerConfig& cfg, TcpServer::ConnectionCallback on_connection,
+             std::function<void()> on_removed)
+        : index_(index),
+          idle_timeout_ms_(cfg.idle_timeout_ms),
+          on_connection_(std::move(on_connection)),
+          on_removed_(std::move(on_removed)) {}
 
     bool init(std::string* err) {
         return loop_.init(err);
@@ -78,11 +82,14 @@ private:
 
         auto connection = std::make_shared<TcpConnection>(&loop_, fd, std::move(peer),
                                                           idle_timeout_ms_);
-        connection->setMessageCallback([](const TcpConnectionPtr& conn, std::string& input) {
-            // P1 的临时应用层协议：原样回显。P2 会替换成 HTTP 状态机。
-            conn->send(input);
-            input.clear();
-        });
+        if (on_connection_) {
+            on_connection_(connection);
+        } else {
+            connection->setMessageCallback([](const TcpConnectionPtr& conn, std::string& input) {
+                conn->send(input);
+                input.clear();
+            });
+        }
         connection->setCloseCallback([this](int closed_fd) {
             connections_.erase(closed_fd);
             onRemoved();
@@ -106,6 +113,7 @@ private:
 
     std::size_t index_;
     int idle_timeout_ms_;
+    TcpServer::ConnectionCallback on_connection_;
     std::function<void()> on_removed_;
     EventLoop loop_;
     std::thread thread_;
@@ -113,7 +121,8 @@ private:
     bool shutting_down_ = false;
 };
 
-TcpServer::TcpServer(const TcpServerConfig& cfg) : cfg_(cfg) {}
+TcpServer::TcpServer(const TcpServerConfig& cfg, ConnectionCallback on_connection)
+    : cfg_(cfg), on_connection_(std::move(on_connection)) {}
 
 TcpServer::~TcpServer() {
     stopWorkers();
@@ -146,7 +155,7 @@ bool TcpServer::init(std::string* err) {
 bool TcpServer::run(const std::function<bool()>& should_stop, std::string* err) {
     workers_.reserve(static_cast<std::size_t>(cfg_.io_threads));
     for (int i = 0; i < cfg_.io_threads; ++i) {
-        auto worker = std::make_unique<IoWorker>(static_cast<std::size_t>(i), cfg_,
+        auto worker = std::make_unique<IoWorker>(static_cast<std::size_t>(i), cfg_, on_connection_,
                                                   [this]() { onConnectionRemoved(); });
         if (!worker->init(err)) {
             stopWorkers();

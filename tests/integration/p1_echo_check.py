@@ -66,7 +66,7 @@ def print_valgrind_summary(stderr: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--connections", type=int, default=1000)
-    parser.add_argument("--binary", default="build/cofinance")
+    parser.add_argument("--binary", default="build/cofinance_echo_server")
     parser.add_argument("--valgrind", action="store_true")
     parser.add_argument("--skip-cpu", action="store_true")
     args = parser.parse_args()

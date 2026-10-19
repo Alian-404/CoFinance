@@ -65,6 +65,11 @@ set(COFINANCE_CORE_SOURCES
     src/net/EventLoop.cpp
     src/net/TcpConnection.cpp
     src/net/TcpServer.cpp
+    src/http/HttpTypes.cpp
+    src/http/HttpParser.cpp
+    src/http/Router.cpp
+    src/http/StaticFileHandler.cpp
+    src/http/HttpServer.cpp
 )
 
 add_library(cofinance_core STATIC ${COFINANCE_CORE_SOURCES})
@@ -102,9 +107,18 @@ if(COFINANCE_BUILD_TESTS)
     target_link_libraries(cofinance_net_tests PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_net_tests)
 
+    add_executable(cofinance_http_tests tests/unit/test_http.cpp)
+    target_link_libraries(cofinance_http_tests PRIVATE cofinance_core)
+    cofinance_enable_warnings(cofinance_http_tests)
+
+    add_executable(cofinance_echo_server tests/integration/echo_server_main.cpp)
+    target_link_libraries(cofinance_echo_server PRIVATE cofinance_core)
+    cofinance_enable_warnings(cofinance_echo_server)
+
     enable_testing()
     add_test(NAME unit COMMAND cofinance_tests)
     add_test(NAME net COMMAND cofinance_net_tests)
+    add_test(NAME http COMMAND cofinance_http_tests)
 endif()
 
 message(STATUS "构建类型: ${CMAKE_BUILD_TYPE} | 测试: ${COFINANCE_BUILD_TESTS} | 净化器: ${COFINANCE_SANITIZE}")

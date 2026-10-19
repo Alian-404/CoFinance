@@ -11,7 +11,7 @@
 |---|---|---|
 | P0 | 工程骨架、配置系统、异步日志、信号处理 | ✅ 已完成（57 个检查点，valgrind 0 泄漏） |
 | P1 | epoll 主从 Reactor + IO 线程组 + 非阻塞 socket | ✅ 已完成（1000 并发连接，valgrind 0 泄漏） |
-| P2 | HTTP 解析 + 路由 + 静态文件 | ⬜ |
+| P2 | HTTP 解析 + 路由 + 静态文件 | ✅ 已完成（52 个检查点，keep-alive/pipeline/限制全通过） |
 | P3 | MySQL 连接池 + DAO + 单元测试框架 | ⬜ |
 | P4 | 用户系统与鉴权（注册/登录/会话） | ⬜ |
 | P5 | 组与成员（邀请/接受/退出/转让） | ⬜ |
@@ -46,23 +46,28 @@ cmake --build build -j16
 ```bash
 ./build/cofinance_tests                    # P0：配置、日志等 57 个检查点
 ./build/cofinance_net_tests                # P1：socket、eventfd、timerfd、空闲超时 22 个检查点
-ctest --test-dir build                     # 通过 CTest 运行两组单测
+./build/cofinance_http_tests               # P2：解析、路由、静态文件 52 个检查点
+ctest --test-dir build                     # 通过 CTest 运行三组单测
 
 # P1 集成验收（脚本自动创建临时端口、1000 条连接、回显、CPU 与优雅退出）
 ulimit -n 65535
 python3 tests/integration/p1_echo_check.py --connections 1000
 
+# P2 集成验收（keep-alive、pipeline、半包、body、超限、超时、路径穿越）
+python3 tests/integration/p2_http_check.py
+
 # 泄漏检查（ASan 与 valgrind 不能同时启用，故单独一个构建目录）
 cmake -S . -B build-nosan -DCOFINANCE_SANITIZE=OFF && cmake --build build-nosan -j16
-python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance \
-    --connections 100 --valgrind --skip-cpu
+python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance_echo_server \
+    --connections 20 --valgrind --skip-cpu
+python3 tests/integration/p2_http_check.py --binary build-nosan/cofinance --valgrind
 ```
 
 ## 目录结构
 
 ```
 CoFinance/
-├── CMakeLists.txt          # 三个 target：cofinance_core / cofinance / cofinance_tests
+├── CMakeLists.txt          # 核心库、主程序、三组单测与 P1 echo 验收服务
 ├── config/                 # server.conf（可提交）+ secrets.conf（600，已 gitignore）
 ├── sql/                    # 建表脚本（P3 起）
 ├── docs/
@@ -76,9 +81,9 @@ CoFinance/
 │   ├── ai/                 # LLM 调用（P10）
 │   └── util/               # 配置、日志、通用工具
 ├── tests/
-│   ├── unit/                # P0 基础单测 + P1 网络单测
-│   └── integration/         # 启动真实服务做并发与退出验收
-├── www/                    # 前端静态页（P11）
+│   ├── unit/                # P0/P1/P2 单元测试
+│   └── integration/         # 真实服务验收与 P1 echo 测试服务
+├── www/                    # 静态文件根目录（P2 先放占位首页，P11 扩展前端）
 └── third_party/            # 第三方单头库（如需 vendor）
 ```
 
@@ -128,6 +133,17 @@ CoFinance/
 - 背压与保护：单连接输入上限 1 MiB、待发送上限 8 MiB，超限主动断开，避免慢客户端拖垮进程。
 - 优雅退出：停止 accept 后，各 worker 关闭全部连接并 join；SIGINT 退出码为 0。
 
-P1 的应用层仍是临时 echo 协议，仅用于验证网络层；P2 会替换为 HTTP 请求解析与路由。
+主程序已经切换到 HTTP；P1 的 echo 协议保留在独立 `cofinance_echo_server` 测试 target 中，历史阶段仍可复现验收。
 
 本机实测（WSL2）：1000 条并发空闲连接稳定；逐连接回显一致；空闲 2 秒仅消耗 0.020 秒 CPU；512 KiB 数据覆盖半写路径；Valgrind `0 errors`、`no leaks are possible`。
+
+## 已实现的技术要点（P2）
+
+- 增量 HTTP/1.x 状态机：请求行 → 头部 → 空行 → 按 `Content-Length` 读 body，支持半包和粘包。
+- keep-alive 与 pipelining：解析器只消费完整请求，剩余字节留给下一个请求；`Connection: close` 会在响应写完后关闭连接。
+- 协议限制：头部 8 KiB、body 1 MiB、请求总时长 10 秒；`Transfer-Encoding`、重复 `Content-Length`、非法 Host/百分号编码都会被拒绝。
+- 路由：按 method + 路径分发，支持 `{id}` 路径参数；路径匹配但方法不对时返回 405 与 `Allow`。
+- 静态文件：`www/` 根目录、常见 MIME、目录默认 `index.html`，并通过 canonical path 校验阻止 `..` 与符号链接逃逸。
+- 每连接独立解析上下文；HTTP 层通过弱引用和定时器接入网络层，不破坏 P1 的线程亲和模型。
+
+本机 P2 实测：keep-alive 连续请求、pipeline 双请求、半包请求、Content-Length body、超大 body/header、Transfer-Encoding、408 超时、路径穿越和 HTTP/1.0 关闭语义全部通过；Valgrind `0 errors`、`no leaks are possible`。

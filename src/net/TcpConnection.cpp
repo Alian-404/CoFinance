@@ -52,8 +52,29 @@ void TcpConnection::send(std::string_view data) {
     updateInterest();
 }
 
+void TcpConnection::shutdownAfterWrite() {
+    if (closed_ || close_after_write_) {
+        return;
+    }
+    close_after_write_ = true;
+    if (output_.size() == output_offset_) {
+        close();
+        return;
+    }
+    updateInterest();
+}
+
 void TcpConnection::close() {
     releaseResources(true);
+}
+
+TimerQueue::TimerId TcpConnection::addTimer(std::int64_t delay_ms,
+                                            std::function<void()> cb) {
+    return loop_->addTimer(delay_ms, std::move(cb));
+}
+
+bool TcpConnection::cancelTimer(TimerQueue::TimerId id) {
+    return loop_->cancelTimer(id);
 }
 
 void TcpConnection::handleEvent(std::uint32_t events) {
@@ -66,6 +87,12 @@ void TcpConnection::handleEvent(std::uint32_t events) {
         ::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &socket_error, &len);
         LOG_DEBUG("连接 %s 发生 EPOLLERR: %s", peer_.c_str(), std::strerror(socket_error));
         close();
+        return;
+    }
+    if (close_after_write_) {
+        if ((events & EPOLLOUT) != 0) {
+            handleWrite();
+        }
         return;
     }
     if ((events & (EPOLLIN | EPOLLRDHUP)) != 0) {
@@ -98,7 +125,7 @@ void TcpConnection::handleRead() {
     for (;;) {
         const ssize_t n = ::read(fd_, buffer, sizeof(buffer));
         if (n > 0) {
-            if (input_.size() + static_cast<std::size_t>(n) > kMaxInputBytes) {
+            if (input_.size() + static_cast<std::size_t>(n) > max_input_bytes_) {
                 LOG_WARN("连接 %s 输入缓冲超过上限，主动关闭 fd=%d", peer_.c_str(), fd_);
                 close();
                 return;
@@ -132,7 +159,7 @@ void TcpConnection::handleRead() {
         if (closed_) {
             return;
         }
-        if (input_.size() > kMaxInputBytes) {
+        if (input_.size() > max_input_bytes_) {
             LOG_WARN("连接 %s 的业务回调未消费输入缓冲，主动关闭", peer_.c_str());
             close();
             return;
@@ -149,6 +176,9 @@ void TcpConnection::handleRead() {
 
 void TcpConnection::handleWrite() {
     if (output_.size() == output_offset_) {
+        if (close_after_write_) {
+            close();
+        }
         return;
     }
 
@@ -178,6 +208,10 @@ void TcpConnection::handleWrite() {
     if (output_offset_ == output_.size()) {
         output_.clear();
         output_offset_ = 0;
+        if (close_after_write_) {
+            close();
+            return;
+        }
         updateInterest();
         if (!closed_ && peer_eof_) {
             close();
@@ -193,7 +227,7 @@ void TcpConnection::updateInterest() {
     }
 
     std::uint32_t events = EPOLLET | EPOLLRDHUP;
-    if (!peer_eof_) {
+    if (!peer_eof_ && !close_after_write_) {
         events |= EPOLLIN;
     }
     if (output_.size() > output_offset_) {

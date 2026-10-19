@@ -10,6 +10,7 @@
 
 #include "cofinance/net/EventLoop.h"
 #include "cofinance/net/Socket.h"
+#include "cofinance/net/TcpConnection.h"
 #include "cofinance/util/Common.h"
 
 namespace cofinance {
@@ -28,7 +29,9 @@ struct TcpServerConfig {
 
 class TcpServer : private NonCopyable {
 public:
-    explicit TcpServer(const TcpServerConfig& cfg);
+    using ConnectionCallback = std::function<void(const TcpConnectionPtr&)>;
+
+    explicit TcpServer(const TcpServerConfig& cfg, ConnectionCallback on_connection = {});
     ~TcpServer();
 
     bool init(std::string* err);
@@ -46,6 +49,7 @@ private:
     void stopWorkers();
 
     TcpServerConfig cfg_;
+    ConnectionCallback on_connection_;
     Socket listen_socket_;
     EventLoop main_loop_;
     std::vector<std::unique_ptr<IoWorker>> workers_;

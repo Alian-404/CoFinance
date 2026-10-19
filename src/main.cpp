@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "cofinance/http/HttpServer.h"
 #include "cofinance/net/TcpServer.h"
 #include "cofinance/util/Common.h"
 #include "cofinance/util/Config.h"
@@ -157,10 +158,26 @@ int main(int argc, char** argv) {
              cofinance::Logger::levelName(log_cfg.level), log_cfg.dir.c_str(),
              log_cfg.queue_size, log_cfg.to_terminal ? "on" : "off");
     LOG_INFO("生效配置（敏感项已打码）:\n%s", cfg.redactedDump().c_str());
-    LOG_INFO("P1 网络层启动：主从 Reactor + 非阻塞 socket + timerfd 空闲超时，临时协议为原样回显");
+    LOG_INFO("P2 HTTP 层启动：请求状态机 + keep-alive + 路由 + 静态文件");
     LOG_DEBUG("这条 DEBUG 日志用于验证日志级别过滤，生产环境把 log.level 调成 INFO 就不会输出");
 
-    // ---------- 5. 主从 Reactor ----------
+    // ---------- 5. HTTP 与主从 Reactor ----------
+    cofinance::http::HttpServerConfig http_cfg;
+    http_cfg.header_limit =
+        static_cast<std::size_t>(cfg.getInt("server.header_limit_bytes", 8192));
+    http_cfg.body_limit =
+        static_cast<std::size_t>(cfg.getInt("server.body_limit_bytes", 1048576));
+    http_cfg.request_timeout_ms =
+        static_cast<int>(cfg.getInt("server.request_timeout_ms", 10000));
+    http_cfg.static_root = cfg.get("server.static_root", "www");
+
+    cofinance::http::HttpServer http_server(http_cfg);
+    if (!http_server.init(&err)) {
+        LOG_FATAL("HTTP 层初始化失败: %s", err.c_str());
+        cofinance::Logger::instance().shutdown();
+        return EXIT_FAILURE;
+    }
+
     cofinance::net::TcpServerConfig net_cfg;
     net_cfg.host = cfg.get("server.host", "0.0.0.0");
     net_cfg.port = static_cast<std::uint16_t>(cfg.getInt("server.port", 9006));
@@ -170,7 +187,9 @@ int main(int argc, char** argv) {
     net_cfg.idle_timeout_ms =
         static_cast<int>(cfg.getInt("server.keepalive_timeout_ms", 60000));
 
-    cofinance::net::TcpServer server(net_cfg);
+    cofinance::net::TcpServer server(net_cfg, [&http_server](const cofinance::net::TcpConnectionPtr& conn) {
+        http_server.onConnection(conn);
+    });
     if (!server.init(&err)) {
         LOG_FATAL("网络层初始化失败: %s", err.c_str());
         cofinance::Logger::instance().shutdown();
