@@ -54,6 +54,17 @@ CREATE TABLE IF NOT EXISTS categories (
   UNIQUE KEY uk_group_name (group_id, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='消费分类';
 
+INSERT IGNORE INTO categories (group_id, name, icon, sort) VALUES
+  (0, '餐饮', 'restaurant', 10),
+  (0, '交通', 'commute', 20),
+  (0, '购物', 'shopping', 30),
+  (0, '居住', 'home', 40),
+  (0, '娱乐', 'entertainment', 50),
+  (0, '医疗', 'medical', 60),
+  (0, '教育', 'education', 70),
+  (0, '工资', 'income', 80),
+  (0, '其他', 'more', 90);
+
 CREATE TABLE IF NOT EXISTS transactions (
   id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   group_id     BIGINT UNSIGNED NOT NULL,

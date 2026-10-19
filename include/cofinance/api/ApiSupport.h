@@ -32,6 +32,10 @@ bool requireString(const json& body, const char* key, std::string* value,
                    http::HttpResponse* error);
 bool optionalString(const json& body, const char* key, std::optional<std::string>* value,
                     http::HttpResponse* error);
+bool requireInt64(const json& body, const char* key, std::int64_t* value,
+                  http::HttpResponse* error);
+bool optionalInt64(const json& body, const char* key, std::optional<std::int64_t>* value,
+                   http::HttpResponse* error);
 
 bool bearerToken(const http::HttpRequest& request, std::string* token,
                  http::HttpResponse* error);
@@ -41,6 +45,9 @@ bool authenticateRequest(const http::HttpRequest& request, service::UserService&
 json userJson(const db::User& user);
 
 bool queryValue(const std::string& query, const std::string& name, std::string* value);
+bool queryValue(const std::string& query, const std::string& name, std::string* value,
+                bool* found);
+bool parseInt64Value(const json& value, std::int64_t* parsed);
 bool parseUInt64(const std::string& text, std::uint64_t* value);
 
 }  // namespace support

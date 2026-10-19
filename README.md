@@ -15,7 +15,7 @@
 | P3 | MySQL 连接池 + 预处理语句 + 事务 + 用户 DAO | ✅ 已完成（57 个检查点，valgrind 0 errors） |
 | P4 | 用户系统与鉴权（注册/登录/会话） | ✅ 已完成（86 个检查点，真实 HTTP 全流程通过） |
 | P5 | 组与成员（邀请/接受/退出/转让） | ✅ 已完成（155 个检查点，真实 HTTP 全流程通过） |
-| P6 | 记账（交易、分摊、分页筛选） | ⬜ |
+| P6 | 记账（交易、分摊、分页筛选） | ✅ 已完成（110 个检查点，真实 HTTP 全流程通过） |
 | P7 | 统计与结算（净额、最少笔数转账） | ⬜ |
 | P8 | 聊天 + 长轮询 | ⬜ |
 | P9 | WebSocket 升级 | ⬜ |
@@ -54,7 +54,8 @@ cmake --build build -j16
 ./build/cofinance_db_tests config/server.conf sql/schema.sql  # P3：连接池/事务/注入 57 个检查点
 ./build/cofinance_auth_tests config/server.conf sql/schema.sql  # P4：PBKDF2/会话/改密 86 个检查点
 ./build/cofinance_group_tests config/server.conf sql/schema.sql # P5：组/邀请/成员状态机 155 个检查点
-ctest --test-dir build                     # 通过 CTest 运行六组单测（需 MySQL）
+./build/cofinance_ledger_tests config/server.conf sql/schema.sql # P6：交易/分摊/幂等 110 个检查点
+ctest --test-dir build                     # 通过 CTest 运行七组单测（需 MySQL）
 
 # P1 集成验收（脚本自动创建临时端口、1000 条连接、回显、CPU 与优雅退出）
 ulimit -n 65535
@@ -69,6 +70,9 @@ python3 tests/integration/p4_auth_check.py
 # P5 集成验收（创建组、邀请、接受/拒绝、退出、移除、转让、解散、IDOR）
 python3 tests/integration/p5_group_check.py
 
+# P6 集成验收（分类、交易、均分余数、幂等、分页、筛选、权限）
+python3 tests/integration/p6_ledger_check.py
+
 # 泄漏检查（ASan 与 valgrind 不能同时启用，故单独一个构建目录）
 cmake -S . -B build-nosan -DCOFINANCE_SANITIZE=OFF && cmake --build build-nosan -j16
 python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance_echo_server \
@@ -76,6 +80,7 @@ python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance_echo_s
 python3 tests/integration/p2_http_check.py --binary build-nosan/cofinance --valgrind
 python3 tests/integration/p4_auth_check.py --binary build-nosan/cofinance --valgrind
 python3 tests/integration/p5_group_check.py --binary build-nosan/cofinance --valgrind
+python3 tests/integration/p6_ledger_check.py --binary build-nosan/cofinance --valgrind
 valgrind --leak-check=full --show-leak-kinds=definite,indirect \
     --errors-for-leak-kinds=definite,indirect --error-exitcode=9 \
     ./build-nosan/cofinance_db_tests config/server.conf sql/schema.sql
@@ -85,7 +90,7 @@ valgrind --leak-check=full --show-leak-kinds=definite,indirect \
 
 ```
 CoFinance/
-├── CMakeLists.txt          # 核心库、主程序、六组单测与 P1 echo 验收服务
+├── CMakeLists.txt          # 核心库、主程序、七组单测与 P1 echo 验收服务
 ├── config/                 # server.conf（可提交）+ secrets.conf（600，已 gitignore）
 ├── sql/schema.sql          # 9 张表的可重复建表脚本
 ├── docs/
@@ -100,7 +105,7 @@ CoFinance/
 │   ├── ai/                 # LLM 调用（P10）
 │   └── util/               # 配置、日志、通用工具
 ├── tests/
-│   ├── unit/                # P0-P5 单元测试
+│   ├── unit/                # P0-P6 单元测试
 │   └── integration/         # 真实服务验收与 P1 echo 测试服务
 ├── www/                    # 静态文件根目录（P2 先放占位首页，P11 扩展前端）
 └── third_party/            # 第三方单头库（如需 vendor）
@@ -203,3 +208,16 @@ CoFinance/
 - 注销衔接：普通成员注销时在事务内退出所有组；仍是活动组 owner 时返回 `1017`，要求先转让或解散，避免产生无主组。
 
 本机 P5 实测：`cofinance_group_tests` 155 个检查点通过；真实 HTTP 创建→邀请→接受/拒绝→退出→移除→转让→解散→IDOR 全流程通过；P2/P4 回归通过；Valgrind `0 errors`，definitely/indirectly lost 均为 0。
+
+## 已实现的技术要点（P6）
+
+- 金额精度：全链路使用整数分，服务层强制 `Σshare_cents == amount_cents`；均分除不尽时，前 `remainder` 个参与人各多 1 分。
+- 事务边界：交易头和全部分摊在同一个事务内写入；更新时先删旧分摊再写新分摊，任一步失败全部回滚。
+- 幂等：`client_token` 必须是客户端生成的 UUID，统一转小写后和 `created_by` 组成唯一键；重复提交先回查，唯一键冲突时回滚并返回首笔交易。同一 token 已属于其他组时返回 `1018/409`，避免跨组回放。
+- 游标分页：按 `id DESC`，游标是上一页最后一条 id，查询 `id < cursor` 并多取一条判断是否还有下一页，避免 OFFSET 深翻页。
+- 筛选：支持分类、付款人、UTC 时间区间；时间接受 `YYYY-MM-DD` 或 `YYYY-MM-DDTHH:MM:SS[.mmm]Z`。
+- 分类：系统分类 `group_id=0` 由建表脚本幂等预置；组内分类名唯一，重复返回 `1016`，普通成员可增删，系统分类不可删。
+- 分类删除保护：分类下仍有未删除交易时返回 `1014`；删除分类与新增交易都锁组行，避免“刚删分类又写入交易”的竞态。
+- 越权：所有 `/api/groups/{gid}/transactions` 接口先校验 formal member；交易修改/删除只允许创建者或 owner。
+
+本机 P6 实测：`cofinance_ledger_tests` 110 个检查点通过；真实 HTTP 分类→新增交易→均分余数→幂等重放（含 UUID 大小写与跨组冲突）→分页筛选→修改/删除→IDOR 全流程通过；P2/P4/P5 回归通过；Valgrind `0 errors`，definitely/indirectly lost 均为 0。

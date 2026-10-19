@@ -61,6 +61,52 @@ bool optionalString(const json& body, const char* key, std::optional<std::string
     return true;
 }
 
+bool parseInt64Value(const json& value, std::int64_t* parsed) {
+    if (value.is_number_unsigned()) {
+        const std::uint64_t raw = value.get<std::uint64_t>();
+        if (raw > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            return false;
+        }
+        *parsed = static_cast<std::int64_t>(raw);
+        return true;
+    }
+    if (value.is_number_integer()) {
+        *parsed = value.get<std::int64_t>();
+        return true;
+    }
+    return false;
+}
+
+bool requireInt64(const json& body, const char* key, std::int64_t* value,
+                  http::HttpResponse* error) {
+    const auto found = body.find(key);
+    if (found == body.end()) {
+        *error = badRequest(std::string("缺少整数字段: ") + key);
+        return false;
+    }
+    if (!parseInt64Value(*found, value)) {
+        *error = badRequest(std::string("字段必须是 64 位整数: ") + key);
+        return false;
+    }
+    return true;
+}
+
+bool optionalInt64(const json& body, const char* key, std::optional<std::int64_t>* value,
+                   http::HttpResponse* error) {
+    const auto found = body.find(key);
+    if (found == body.end()) {
+        value->reset();
+        return true;
+    }
+    std::int64_t parsed = 0;
+    if (!parseInt64Value(*found, &parsed)) {
+        *error = badRequest(std::string("字段必须是 64 位整数: ") + key);
+        return false;
+    }
+    *value = parsed;
+    return true;
+}
+
 bool bearerToken(const http::HttpRequest& request, std::string* token,
                  http::HttpResponse* error) {
     const std::string header = request.header("authorization");
@@ -138,6 +184,13 @@ bool decodeQueryPart(const std::string& raw, std::string* decoded) {
 }
 
 bool queryValue(const std::string& query, const std::string& name, std::string* value) {
+    bool found = false;
+    return queryValue(query, name, value, &found);
+}
+
+bool queryValue(const std::string& query, const std::string& name, std::string* value,
+                bool* found) {
+    *found = false;
     std::size_t begin = 0;
     while (begin <= query.size()) {
         const std::size_t amp = query.find('&', begin);
@@ -147,6 +200,7 @@ bool queryValue(const std::string& query, const std::string& name, std::string* 
         const std::string raw_key = pair.substr(0, equals);
         std::string key;
         if (decodeQueryPart(raw_key, &key) && key == name) {
+            *found = true;
             const std::string raw_value =
                 equals == std::string::npos ? std::string() : pair.substr(equals + 1);
             return decodeQueryPart(raw_value, value);
@@ -156,7 +210,7 @@ bool queryValue(const std::string& query, const std::string& name, std::string* 
         }
         begin = amp + 1;
     }
-    return false;
+    return true;
 }
 
 bool parseUInt64(const std::string& text, std::uint64_t* value) {
