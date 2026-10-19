@@ -32,6 +32,9 @@ public:
     bool findActiveById(std::uint64_t id, std::optional<User>* user, std::string* err);
     bool findActiveByUsername(const std::string& username, std::optional<User>* user,
                               std::string* err);
+    bool lockActiveById(std::uint64_t id, std::optional<User>* user, std::string* err);
+    bool lockActiveByUsername(const std::string& username, std::optional<User>* user,
+                              std::string* err);
     bool insert(User& user, std::string* err, bool* duplicate = nullptr);
     bool updateProfile(std::uint64_t id, const std::string& nickname,
                        const std::string& avatar_url, std::string* err);

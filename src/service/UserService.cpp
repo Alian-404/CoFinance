@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "cofinance/db/ConnectionPool.h"
+#include "cofinance/db/GroupDao.h"
 #include "cofinance/db/SessionDao.h"
 #include "cofinance/db/TransactionGuard.h"
 #include "cofinance/util/Crypto.h"
@@ -459,7 +460,48 @@ bool UserService::deleteAccount(const AuthContext& context, ServiceError* error)
         setDatabaseError(error, "开启注销事务", db_error);
         return false;
     }
+    db::GroupDao groups(lease.connection());
+    std::vector<std::uint64_t> group_ids;
+    if (!groups.listMembershipGroupIds(context.user.id, &group_ids, &db_error)) {
+        setDatabaseError(error, "查询用户所在组", db_error);
+        return false;
+    }
+    for (std::uint64_t group_id : group_ids) {
+        std::optional<db::GroupRecord> group;
+        if (!groups.lockGroup(group_id, &group, &db_error)) {
+            setDatabaseError(error, "锁定用户所在组", db_error);
+            return false;
+        }
+        if (!group.has_value() || group->status != 0) {
+            continue;
+        }
+        std::optional<db::MembershipRecord> membership;
+        if (!groups.lockMembership(group_id, context.user.id, &membership, &db_error)) {
+            setDatabaseError(error, "锁定用户的组成员关系", db_error);
+            return false;
+        }
+        const bool active_member_owner =
+            membership.has_value() && membership->status == 1 && membership->role == 0;
+        if (group->owner_id == context.user.id || active_member_owner) {
+            setError(error, 400, 1017, "请先转让组长或解散组，再注销账号");
+            return false;
+        }
+    }
+
     db::UserDao users(lease.connection());
+    std::optional<db::User> locked_user;
+    if (!users.lockActiveById(context.user.id, &locked_user, &db_error)) {
+        setDatabaseError(error, "锁定注销用户", db_error);
+        return false;
+    }
+    if (!locked_user.has_value()) {
+        setError(error, 401, 1002, "账号不存在或已注销");
+        return false;
+    }
+    if (!groups.withdrawMemberships(context.user.id, &db_error)) {
+        setDatabaseError(error, "退出用户的所有组", db_error);
+        return false;
+    }
     if (!users.softDelete(context.user.id, &db_error)) {
         setDatabaseError(error, "软删除用户", db_error);
         return false;

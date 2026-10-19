@@ -89,6 +89,21 @@ bool UserDao::findActiveByUsername(const std::string& username, std::optional<Us
     return readOne(sql, {SqlParam{username}}, user, err);
 }
 
+bool UserDao::lockActiveById(std::uint64_t id, std::optional<User>* user, std::string* err) {
+    const std::string sql = std::string("SELECT ") + kUserColumns +
+                            "FROM users WHERE id = ? AND status = 0 AND deleted_at IS NULL "
+                            "FOR UPDATE";
+    return readOne(sql, {SqlParam{id}}, user, err);
+}
+
+bool UserDao::lockActiveByUsername(const std::string& username, std::optional<User>* user,
+                                   std::string* err) {
+    const std::string sql = std::string("SELECT ") + kUserColumns +
+                            "FROM users WHERE username = ? AND status = 0 "
+                            "AND deleted_at IS NULL FOR UPDATE";
+    return readOne(sql, {SqlParam{username}}, user, err);
+}
+
 bool UserDao::insert(User& user, std::string* err, bool* duplicate) {
     if (duplicate != nullptr) {
         *duplicate = false;

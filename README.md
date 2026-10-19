@@ -14,7 +14,7 @@
 | P2 | HTTP 解析 + 路由 + 静态文件 | ✅ 已完成（52 个检查点，keep-alive/pipeline/限制全通过） |
 | P3 | MySQL 连接池 + 预处理语句 + 事务 + 用户 DAO | ✅ 已完成（57 个检查点，valgrind 0 errors） |
 | P4 | 用户系统与鉴权（注册/登录/会话） | ✅ 已完成（86 个检查点，真实 HTTP 全流程通过） |
-| P5 | 组与成员（邀请/接受/退出/转让） | ⬜ |
+| P5 | 组与成员（邀请/接受/退出/转让） | ✅ 已完成（155 个检查点，真实 HTTP 全流程通过） |
 | P6 | 记账（交易、分摊、分页筛选） | ⬜ |
 | P7 | 统计与结算（净额、最少笔数转账） | ⬜ |
 | P8 | 聊天 + 长轮询 | ⬜ |
@@ -53,7 +53,8 @@ cmake --build build -j16
 ./build/cofinance_http_tests               # P2：解析、路由、静态文件 52 个检查点
 ./build/cofinance_db_tests config/server.conf sql/schema.sql  # P3：连接池/事务/注入 57 个检查点
 ./build/cofinance_auth_tests config/server.conf sql/schema.sql  # P4：PBKDF2/会话/改密 86 个检查点
-ctest --test-dir build                     # 通过 CTest 运行五组单测（需 MySQL）
+./build/cofinance_group_tests config/server.conf sql/schema.sql # P5：组/邀请/成员状态机 155 个检查点
+ctest --test-dir build                     # 通过 CTest 运行六组单测（需 MySQL）
 
 # P1 集成验收（脚本自动创建临时端口、1000 条连接、回显、CPU 与优雅退出）
 ulimit -n 65535
@@ -65,12 +66,16 @@ python3 tests/integration/p2_http_check.py
 # P4 集成验收（注册、登录、Bearer、改密、登出、注销）
 python3 tests/integration/p4_auth_check.py
 
+# P5 集成验收（创建组、邀请、接受/拒绝、退出、移除、转让、解散、IDOR）
+python3 tests/integration/p5_group_check.py
+
 # 泄漏检查（ASan 与 valgrind 不能同时启用，故单独一个构建目录）
 cmake -S . -B build-nosan -DCOFINANCE_SANITIZE=OFF && cmake --build build-nosan -j16
 python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance_echo_server \
     --connections 20 --valgrind --skip-cpu
 python3 tests/integration/p2_http_check.py --binary build-nosan/cofinance --valgrind
 python3 tests/integration/p4_auth_check.py --binary build-nosan/cofinance --valgrind
+python3 tests/integration/p5_group_check.py --binary build-nosan/cofinance --valgrind
 valgrind --leak-check=full --show-leak-kinds=definite,indirect \
     --errors-for-leak-kinds=definite,indirect --error-exitcode=9 \
     ./build-nosan/cofinance_db_tests config/server.conf sql/schema.sql
@@ -80,7 +85,7 @@ valgrind --leak-check=full --show-leak-kinds=definite,indirect \
 
 ```
 CoFinance/
-├── CMakeLists.txt          # 核心库、主程序、五组单测与 P1 echo 验收服务
+├── CMakeLists.txt          # 核心库、主程序、六组单测与 P1 echo 验收服务
 ├── config/                 # server.conf（可提交）+ secrets.conf（600，已 gitignore）
 ├── sql/schema.sql          # 9 张表的可重复建表脚本
 ├── docs/
@@ -95,7 +100,7 @@ CoFinance/
 │   ├── ai/                 # LLM 调用（P10）
 │   └── util/               # 配置、日志、通用工具
 ├── tests/
-│   ├── unit/                # P0-P4 单元测试
+│   ├── unit/                # P0-P5 单元测试
 │   └── integration/         # 真实服务验收与 P1 echo 测试服务
 ├── www/                    # 静态文件根目录（P2 先放占位首页，P11 扩展前端）
 └── third_party/            # 第三方单头库（如需 vendor）
@@ -186,3 +191,15 @@ CoFinance/
 - 防枚举：不存在的用户名也执行一次同成本 PBKDF2，避免仅靠响应时间判断账号是否存在。
 
 本机 P4 实测：`cofinance_auth_tests` 86 个检查点通过；真实 HTTP 注册→登录→鉴权→改密→登出→注销全流程通过；P2 回归通过；Valgrind `0 errors`，definitely/indirectly lost 均为 0。
+
+## 已实现的技术要点（P5）
+
+- 组与成员状态机：`group_members.status` 区分待接受、已加入、拒绝、退出、移除、过期，所有变更都在事务内完成。
+- 行锁串行化：组级写操作先 `SELECT ... FROM finance_groups WHERE id=? FOR UPDATE`，同一组的邀请、接受、退出、移除和转让不会并发破坏不变量。
+- 容量一致：组上限 20 人，待接受邀请也占名额；邀请和接受都在组锁内统计，两个并发邀请不会一起越过上限。
+- 邀请有效期：7 天未处理自动置为过期；接受、拒绝和邀请列表都会处理过期状态，旧成员行再次邀请时复用而不是新增重复行。
+- owner 不变量：owner 不能直接退出或被移除；转让在事务内同时更新 `finance_groups.owner_id` 和双方 `role`。
+- 越权防护：非成员访问组详情、成员、邀请和角色接口统一返回 `1004/403`；路径 ID 严格解析，避免恶意 `gid/uid`。
+- 注销衔接：普通成员注销时在事务内退出所有组；仍是活动组 owner 时返回 `1017`，要求先转让或解散，避免产生无主组。
+
+本机 P5 实测：`cofinance_group_tests` 155 个检查点通过；真实 HTTP 创建→邀请→接受/拒绝→退出→移除→转让→解散→IDOR 全流程通过；P2/P4 回归通过；Valgrind `0 errors`，definitely/indirectly lost 均为 0。

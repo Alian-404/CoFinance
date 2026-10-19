@@ -77,8 +77,12 @@ set(COFINANCE_CORE_SOURCES
     src/db/TransactionGuard.cpp
     src/db/UserDao.cpp
     src/db/SessionDao.cpp
+    src/db/GroupDao.cpp
+    src/api/ApiSupport.cpp
     src/service/UserService.cpp
+    src/service/GroupService.cpp
     src/api/UserApi.cpp
+    src/api/GroupApi.cpp
 )
 
 add_library(cofinance_core STATIC ${COFINANCE_CORE_SOURCES})
@@ -128,6 +132,10 @@ if(COFINANCE_BUILD_TESTS)
     target_link_libraries(cofinance_auth_tests PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_auth_tests)
 
+    add_executable(cofinance_group_tests tests/unit/test_group.cpp)
+    target_link_libraries(cofinance_group_tests PRIVATE cofinance_core)
+    cofinance_enable_warnings(cofinance_group_tests)
+
     add_executable(cofinance_echo_server tests/integration/echo_server_main.cpp)
     target_link_libraries(cofinance_echo_server PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_echo_server)
@@ -139,6 +147,8 @@ if(COFINANCE_BUILD_TESTS)
     add_test(NAME db COMMAND cofinance_db_tests
         ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
     add_test(NAME auth COMMAND cofinance_auth_tests
+        ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
+    add_test(NAME group COMMAND cofinance_group_tests
         ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
 endif()
 

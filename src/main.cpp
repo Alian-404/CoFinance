@@ -8,10 +8,12 @@
 #include <string>
 #include <vector>
 
+#include "cofinance/api/GroupApi.h"
 #include "cofinance/api/UserApi.h"
 #include "cofinance/db/ConnectionPool.h"
 #include "cofinance/http/HttpServer.h"
 #include "cofinance/net/TcpServer.h"
+#include "cofinance/service/GroupService.h"
 #include "cofinance/service/UserService.h"
 #include "cofinance/util/Common.h"
 #include "cofinance/util/Config.h"
@@ -161,7 +163,7 @@ int main(int argc, char** argv) {
              cofinance::Logger::levelName(log_cfg.level), log_cfg.dir.c_str(),
              log_cfg.queue_size, log_cfg.to_terminal ? "on" : "off");
     LOG_INFO("生效配置（敏感项已打码）:\n%s", cfg.redactedDump().c_str());
-    LOG_INFO("P4 用户系统启动：PBKDF2 密码哈希 + 不透明 token + 服务端会话");
+    LOG_INFO("P5 组与成员系统启动：行锁 + 事务 + 邀请状态机");
     LOG_DEBUG("这条 DEBUG 日志用于验证日志级别过滤，生产环境把 log.level 调成 INFO 就不会输出");
 
     // ---------- 5. MySQL 连接池 ----------
@@ -185,6 +187,7 @@ int main(int argc, char** argv) {
              db_cfg.database.c_str(), db_pool.capacity());
 
     cofinance::service::UserService user_service(db_pool);
+    cofinance::service::GroupService group_service(db_pool);
 
     // ---------- 6. HTTP 与主从 Reactor ----------
     cofinance::http::HttpServerConfig http_cfg;
@@ -206,6 +209,7 @@ int main(int argc, char** argv) {
         return db_pool.healthCheck(check_err);
     });
     cofinance::api::UserApi::registerRoutes(http_server, user_service);
+    cofinance::api::GroupApi::registerRoutes(http_server, user_service, group_service);
 
     cofinance::net::TcpServerConfig net_cfg;
     net_cfg.host = cfg.get("server.host", "0.0.0.0");
