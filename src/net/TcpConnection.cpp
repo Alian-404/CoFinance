@@ -49,7 +49,17 @@ void TcpConnection::send(std::string_view data) {
         return;
     }
     output_.append(data.data(), data.size());
+    // 已在连接所属 IO 线程时直接尝试写出，避免响应排在此前投递的批量任务之后。
+    // 跨线程调用仍只更新 EPOLLOUT，由所属 EventLoop 完成实际写操作。
+    if (loop_->isLoopThread()) {
+        handleWrite();
+        return;
+    }
     updateInterest();
+}
+
+void TcpConnection::runInLoop(std::function<void()> task) {
+    loop_->runInLoop(std::move(task));
 }
 
 void TcpConnection::shutdownAfterWrite() {

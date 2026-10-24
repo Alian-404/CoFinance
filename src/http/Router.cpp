@@ -20,6 +20,75 @@ void Router::add(std::string method, std::string pattern, Handler handler) {
     routes_.push_back(std::move(route));
 }
 
+void Router::addAsync(std::string method, std::string pattern, AsyncHandler handler) {
+    Route route;
+    route.method = util::toUpper(std::move(method));
+    route.segments = splitPath(pattern);
+    route.async_handler = std::move(handler);
+    routes_.push_back(std::move(route));
+}
+
+DispatchResult Router::dispatch(HttpRequest& request, const AsyncContext& context) const {
+    const std::vector<std::string> actual = splitPath(request.path);
+    std::set<std::string> allowed;
+
+    for (const Route& route : routes_) {
+        if (matchSegments(route.segments, actual, nullptr) && route.method != request.method &&
+            !(request.method == "HEAD" && route.method == "GET")) {
+            allowed.insert(route.method);
+        }
+    }
+
+    for (const Route& route : routes_) {
+        const bool method_matches =
+            route.method == request.method || (request.method == "HEAD" && route.method == "GET");
+        if (!method_matches || !matchSegments(route.segments, actual, &request)) {
+            continue;
+        }
+        if (route.async_handler) {
+            try {
+                route.async_handler(request, context);
+            } catch (const std::exception& e) {
+                LOG_ERROR("HTTP 异步路由处理异常 %s %s: %s", request.method.c_str(),
+                          request.path.c_str(), e.what());
+                context.respond(HttpResponse::text(500, "Internal Server Error\n"));
+            } catch (...) {
+                LOG_ERROR("HTTP 异步路由处理未知异常 %s %s", request.method.c_str(),
+                          request.path.c_str());
+                context.respond(HttpResponse::text(500, "Internal Server Error\n"));
+            }
+            return DispatchResult{DispatchStatus::Pending, HttpResponse()};
+        }
+        try {
+            return DispatchResult{DispatchStatus::Complete, route.handler(request)};
+        } catch (const std::exception& e) {
+            LOG_ERROR("HTTP 路由处理异常 %s %s: %s", request.method.c_str(),
+                      request.path.c_str(), e.what());
+            return DispatchResult{DispatchStatus::Complete,
+                                  HttpResponse::text(500, "Internal Server Error\n")};
+        } catch (...) {
+            LOG_ERROR("HTTP 路由处理未知异常 %s %s", request.method.c_str(),
+                      request.path.c_str());
+            return DispatchResult{DispatchStatus::Complete,
+                                  HttpResponse::text(500, "Internal Server Error\n")};
+        }
+    }
+
+    if (!allowed.empty()) {
+        std::string allow;
+        for (const std::string& method : allowed) {
+            if (!allow.empty()) {
+                allow += ", ";
+            }
+            allow += method;
+        }
+        HttpResponse response = HttpResponse::text(405, "Method Not Allowed\n");
+        response.setHeader("Allow", allow);
+        return DispatchResult{DispatchStatus::MethodNotAllowed, std::move(response)};
+    }
+    return DispatchResult{};
+}
+
 std::optional<HttpResponse> Router::dispatch(HttpRequest& request) const {
     const std::vector<std::string> actual = splitPath(request.path);
     std::set<std::string> allowed;

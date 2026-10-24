@@ -215,7 +215,21 @@ bool GroupDao::listGroupsForUser(std::uint64_t user_id,
         "DATE_FORMAT(g.created_at, '%Y-%m-%dT%H:%i:%sZ'), "
         "DATE_FORMAT(g.updated_at, '%Y-%m-%dT%H:%i:%sZ'), gm.role, "
         "(SELECT COUNT(*) FROM group_members c "
-        " WHERE c.group_id = g.id AND c.status = 1) "
+        " WHERE c.group_id = g.id AND c.status = 1), "
+        "(SELECT COUNT(*) FROM messages m "
+        " WHERE m.group_id = g.id AND m.id > gm.last_read_message_id), "
+        "COALESCE((SELECT m.id FROM messages m WHERE m.group_id = g.id "
+        " ORDER BY m.id DESC LIMIT 1), 0), "
+        "COALESCE((SELECT m.content FROM messages m WHERE m.group_id = g.id "
+        " ORDER BY m.id DESC LIMIT 1), ''), "
+        "COALESCE((SELECT DATE_FORMAT(m.created_at, '%Y-%m-%dT%H:%i:%sZ') "
+        " FROM messages m WHERE m.group_id = g.id ORDER BY m.id DESC LIMIT 1), ''), "
+        "COALESCE((SELECT IF(m.sender_id = 0, '系统', "
+        " COALESCE(NULLIF(u.nickname, ''), u.username)) FROM messages m "
+        " LEFT JOIN users u ON u.id = m.sender_id WHERE m.group_id = g.id "
+        " ORDER BY m.id DESC LIMIT 1), ''), "
+        "COALESCE((SELECT m.type FROM messages m WHERE m.group_id = g.id "
+        " ORDER BY m.id DESC LIMIT 1), 0) "
         "FROM finance_groups g JOIN group_members gm ON gm.group_id = g.id "
         "WHERE gm.user_id = ? AND gm.status = 1 AND g.status = 0 "
         "ORDER BY g.updated_at DESC, g.id DESC";
@@ -234,7 +248,7 @@ bool GroupDao::listGroupsForUser(std::uint64_t user_id,
             return true;
         }
         try {
-            if (row.size() != 8) {
+            if (row.size() != 14) {
                 throw std::runtime_error("组列表查询结果列数不正确");
             }
             GroupSummaryRecord summary;
@@ -246,6 +260,12 @@ bool GroupDao::listGroupsForUser(std::uint64_t user_id,
             summary.group.updated_at = requiredText(row[5], "finance_groups.updated_at");
             summary.role = parseInt(row[6], "group_members.role");
             summary.member_count = parseUnsigned(row[7], "member_count");
+            summary.unread_count = parseUnsigned(row[8], "unread_count");
+            summary.last_message_id = parseUnsigned(row[9], "last_message_id");
+            summary.last_message_content = requiredText(row[10], "last_message_content");
+            summary.last_message_at = requiredText(row[11], "last_message_at");
+            summary.last_message_sender_name = requiredText(row[12], "last_message_sender_name");
+            summary.last_message_type = parseInt(row[13], "last_message_type");
             groups->push_back(std::move(summary));
         } catch (const std::exception& e) {
             if (err != nullptr) {
@@ -309,8 +329,10 @@ bool GroupDao::updateInvitation(std::uint64_t member_id, std::uint64_t invited_b
 bool GroupDao::acceptMembership(std::uint64_t member_id, std::string* err) {
     PreparedStatement statement(
         connection_,
-        "UPDATE group_members SET status = 1, role = 1, joined_at = UTC_TIMESTAMP() "
-        "WHERE id = ? AND status = 0",
+        "UPDATE group_members gm SET status = 1, role = 1, joined_at = UTC_TIMESTAMP(), "
+        "last_read_message_id = (SELECT COALESCE(MAX(m.id), 0) FROM messages m "
+        "WHERE m.group_id = gm.group_id) "
+        "WHERE gm.id = ? AND gm.status = 0",
         err);
     return statement.valid() && statement.bind({SqlParam{member_id}}, err) &&
            statement.execute(err) && statement.affectedRows() == 1;

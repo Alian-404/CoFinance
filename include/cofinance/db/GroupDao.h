@@ -41,6 +41,12 @@ struct GroupSummaryRecord {
     GroupRecord group;
     int role = 1;
     std::uint64_t member_count = 0;
+    std::uint64_t unread_count = 0;
+    std::uint64_t last_message_id = 0;
+    int last_message_type = 0;
+    std::string last_message_content;
+    std::string last_message_at;
+    std::string last_message_sender_name;
 };
 
 struct InviteRecord {

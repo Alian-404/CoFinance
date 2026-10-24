@@ -30,6 +30,7 @@ public:
     using HealthCheck = std::function<bool(std::string* err)>;
     void setHealthCheck(HealthCheck check);
     void addRoute(std::string method, std::string path, Router::Handler handler);
+    void addAsyncRoute(std::string method, std::string path, Router::AsyncHandler handler);
 
     bool init(std::string* err);
     void onConnection(const net::TcpConnectionPtr& connection);
@@ -37,7 +38,7 @@ public:
 private:
     friend class HttpConnection;
 
-    HttpResponse handleRequest(HttpRequest& request) const;
+    DispatchResult handleRequest(HttpRequest& request, const AsyncContext& context) const;
     static HttpResponse errorResponse(int status);
 
     HttpServerConfig cfg_;

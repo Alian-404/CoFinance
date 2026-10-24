@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "cofinance/api/GroupApi.h"
+#include "cofinance/api/ChatApi.h"
 #include "cofinance/api/LedgerApi.h"
 #include "cofinance/api/StatsApi.h"
 #include "cofinance/api/UserApi.h"
@@ -16,6 +17,7 @@
 #include "cofinance/http/HttpServer.h"
 #include "cofinance/net/TcpServer.h"
 #include "cofinance/service/GroupService.h"
+#include "cofinance/service/ChatService.h"
 #include "cofinance/service/LedgerService.h"
 #include "cofinance/service/SettlementService.h"
 #include "cofinance/service/UserService.h"
@@ -167,7 +169,7 @@ int main(int argc, char** argv) {
              cofinance::Logger::levelName(log_cfg.level), log_cfg.dir.c_str(),
              log_cfg.queue_size, log_cfg.to_terminal ? "on" : "off");
     LOG_INFO("生效配置（敏感项已打码）:\n%s", cfg.redactedDump().c_str());
-    LOG_INFO("P7 结算系统启动：统计聚合 + 净额 + 最少笔数建议 + 结算落库");
+    LOG_INFO("P8 聊天系统启动：消息幂等 + 游标分页 + 已读水位线 + 事件驱动长轮询");
     LOG_DEBUG("这条 DEBUG 日志用于验证日志级别过滤，生产环境把 log.level 调成 INFO 就不会输出");
 
     // ---------- 5. MySQL 连接池 ----------
@@ -194,6 +196,14 @@ int main(int argc, char** argv) {
     cofinance::service::GroupService group_service(db_pool);
     cofinance::service::LedgerService ledger_service(db_pool);
     cofinance::service::SettlementService settlement_service(db_pool);
+    cofinance::service::LongPollLimits poll_limits;
+    poll_limits.per_user =
+        static_cast<std::size_t>(cfg.getInt("server.long_poll_max_per_user", 5));
+    poll_limits.per_group =
+        static_cast<std::size_t>(cfg.getInt("server.long_poll_max_per_group", 200));
+    poll_limits.total =
+        static_cast<std::size_t>(cfg.getInt("server.long_poll_max_total", 4096));
+    cofinance::service::ChatService chat_service(db_pool, poll_limits);
 
     // ---------- 6. HTTP 与主从 Reactor ----------
     cofinance::http::HttpServerConfig http_cfg;
@@ -218,6 +228,7 @@ int main(int argc, char** argv) {
     cofinance::api::GroupApi::registerRoutes(http_server, user_service, group_service);
     cofinance::api::LedgerApi::registerRoutes(http_server, user_service, ledger_service);
     cofinance::api::StatsApi::registerRoutes(http_server, user_service, settlement_service);
+    cofinance::api::ChatApi::registerRoutes(http_server, user_service, chat_service);
 
     cofinance::net::TcpServerConfig net_cfg;
     net_cfg.host = cfg.get("server.host", "0.0.0.0");

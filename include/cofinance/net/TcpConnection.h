@@ -30,6 +30,7 @@ public:
     void setInputLimit(std::size_t bytes) noexcept { max_input_bytes_ = bytes; }
 
     void send(std::string_view data);
+    void runInLoop(std::function<void()> task);
     void shutdownAfterWrite();
     void close();
 

@@ -81,11 +81,16 @@ bool EventLoop::cancelTimer(TimerQueue::TimerId id) {
 }
 
 void EventLoop::runInLoop(Task task) {
+    bool need_wakeup = false;
     {
         std::lock_guard<std::mutex> lock(tasks_mutex_);
+        // 队列非空说明此前已经写过 eventfd；同一批任务只需唤醒一次。
         pending_tasks_.push_back(std::move(task));
+        need_wakeup = pending_tasks_.size() == 1;
     }
-    wakeup();
+    if (need_wakeup) {
+        wakeup();
+    }
 }
 
 void EventLoop::run() {

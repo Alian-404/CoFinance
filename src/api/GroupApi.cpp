@@ -38,6 +38,16 @@ json groupJson(const db::GroupSummaryRecord& summary) {
     json value = groupJson(summary.group);
     value["role"] = roleName(summary.role);
     value["member_count"] = summary.member_count;
+    value["unread_count"] = summary.unread_count;
+    json last_message = nullptr;
+    if (summary.last_message_id != 0) {
+        last_message = json{{"id", summary.last_message_id},
+                            {"type", summary.last_message_type},
+                            {"content", summary.last_message_content},
+                            {"created_at", summary.last_message_at},
+                            {"sender_name", summary.last_message_sender_name}};
+    }
+    value["last_message"] = std::move(last_message);
     return value;
 }
 

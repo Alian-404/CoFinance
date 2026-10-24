@@ -132,6 +132,7 @@ void Config::validate(std::vector<std::string>* errors,
         long long def;
         long long lo;
         long long hi;
+        bool required = true;
     };
     static const RangeCheck kRanges[] = {
         {"server.port", 9006, 1, 65535},
@@ -140,6 +141,9 @@ void Config::validate(std::vector<std::string>* errors,
         {"server.max_connections", 20000, 1, 1000000},
         {"server.keepalive_timeout_ms", 60000, 1000, 3600000},
         {"server.request_timeout_ms", 10000, 100, 600000},
+        {"server.long_poll_max_per_user", 5, 1, 1000000, false},
+        {"server.long_poll_max_per_group", 200, 1, 100000, false},
+        {"server.long_poll_max_total", 4096, 1, 1000000, false},
         {"server.header_limit_bytes", 8192, 512, 1048576},
         {"server.body_limit_bytes", 1048576, 1024, 104857600},
         {"log.queue_size", 65536, 1024, 10485760},
@@ -150,7 +154,9 @@ void Config::validate(std::vector<std::string>* errors,
     for (const RangeCheck& rc : kRanges) {
         const std::string raw = get(rc.key);
         if (raw.empty()) {
-            err(std::string("缺少必填配置项: ") + rc.key);
+            if (rc.required) {
+                err(std::string("缺少必填配置项: ") + rc.key);
+            }
             continue;
         }
         const long long v = getInt(rc.key, rc.def);

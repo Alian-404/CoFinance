@@ -17,7 +17,7 @@
 | P5 | 组与成员（邀请/接受/退出/转让） | ✅ 已完成（155 个检查点，真实 HTTP 全流程通过） |
 | P6 | 记账（交易、分摊、分页筛选） | ✅ 已完成（110 个检查点，真实 HTTP 全流程通过） |
 | P7 | 统计与结算（净额、最少笔数转账） | ✅ 已完成（149 个检查点，真实 HTTP 全流程通过） |
-| P8 | 聊天 + 长轮询 | ⬜ |
+| P8 | 聊天 + 长轮询 | ✅ 已完成（80 个检查点，2000 并发挂起，valgrind 0 errors） |
 | P9 | WebSocket 升级 | ⬜ |
 | P10 | AI 助手（DeepSeek） | ⬜ |
 | P11 | 前端整合 + 压测 + 文档收尾 | ⬜ |
@@ -56,7 +56,8 @@ cmake --build build -j16
 ./build/cofinance_group_tests config/server.conf sql/schema.sql # P5：组/邀请/成员状态机 155 个检查点
 ./build/cofinance_ledger_tests config/server.conf sql/schema.sql # P6：交易/分摊/幂等 110 个检查点
 ./build/cofinance_settlement_tests config/server.conf sql/schema.sql # P7：统计/净额/结算 149 个检查点
-ctest --test-dir build                     # 通过 CTest 运行八组单测（需 MySQL）
+./build/cofinance_chat_tests config/server.conf sql/schema.sql # P8：聊天/幂等/已读/长轮询 80 个检查点
+ctest --test-dir build                     # 通过 CTest 运行九组单测（需 MySQL）
 
 # P1 集成验收（脚本自动创建临时端口、1000 条连接、回显、CPU 与优雅退出）
 ulimit -n 65535
@@ -77,6 +78,12 @@ python3 tests/integration/p6_ledger_check.py
 # P7 集成验收（统计、余额、建议、部分结算、超额拒绝、退出/移除/强制解散）
 python3 tests/integration/p7_settlement_check.py
 
+# P8 集成验收（消息、幂等、分页、已读、超时、断开清理、配额）
+python3 tests/integration/p8_chat_check.py
+
+# P8 并发验收：2000 条长轮询挂起，全部送达
+python3 tests/integration/p8_chat_check.py --stress 2000
+
 # 泄漏检查（ASan 与 valgrind 不能同时启用，故单独一个构建目录）
 cmake -S . -B build-nosan -DCOFINANCE_SANITIZE=OFF && cmake --build build-nosan -j16
 python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance_echo_server \
@@ -86,6 +93,7 @@ python3 tests/integration/p4_auth_check.py --binary build-nosan/cofinance --valg
 python3 tests/integration/p5_group_check.py --binary build-nosan/cofinance --valgrind
 python3 tests/integration/p6_ledger_check.py --binary build-nosan/cofinance --valgrind
 python3 tests/integration/p7_settlement_check.py --binary build-nosan/cofinance --valgrind
+python3 tests/integration/p8_chat_check.py --binary build-nosan/cofinance --valgrind
 valgrind --leak-check=full --show-leak-kinds=definite,indirect \
     --errors-for-leak-kinds=definite,indirect --error-exitcode=9 \
     ./build-nosan/cofinance_db_tests config/server.conf sql/schema.sql
@@ -95,7 +103,7 @@ valgrind --leak-check=full --show-leak-kinds=definite,indirect \
 
 ```
 CoFinance/
-├── CMakeLists.txt          # 核心库、主程序、八组单测与 P1 echo 验收服务
+├── CMakeLists.txt          # 核心库、主程序、九组单测与 P1 echo 验收服务
 ├── config/                 # server.conf（可提交）+ secrets.conf（600，已 gitignore）
 ├── sql/schema.sql          # 9 张表的可重复建表脚本
 ├── docs/
@@ -110,7 +118,7 @@ CoFinance/
 │   ├── ai/                 # LLM 调用（P10）
 │   └── util/               # 配置、日志、通用工具
 ├── tests/
-│   ├── unit/                # P0-P7 单元测试
+│   ├── unit/                # P0-P8 单元测试
 │   └── integration/         # 真实服务验收与 P1 echo 测试服务
 ├── www/                    # 静态文件根目录（P2 先放占位首页，P11 扩展前端）
 └── third_party/            # 第三方单头库（如需 vendor）
@@ -237,3 +245,17 @@ CoFinance/
 - 强制解散：owner 可用 `DELETE /api/groups/{gid}?force=true` 跳过余额闸门，并把未结清余额快照写入系统消息，保证可审计。
 
 本机 P7 实测：`cofinance_settlement_tests` 149 个检查点通过；真实 HTTP 统计→收支混合净额→建议→部分结算→超额拒绝→结清→退出/移除/强制解散全流程通过；P2–P6 全量回归通过；Valgrind 版 HTTP 验收退出码为 0。
+
+## 已实现的技术要点（P8）
+
+- 聊天接口：发送、历史分页、增量拉取、长轮询、已读上报、未读数；组列表附带 `unread_count` 与 `last_message`。
+- 消息幂等：`(sender_id, client_msg_id)` 唯一键，UUID 统一小写；同组重放返回首条消息，跨组复用返回 `1018/409`。
+- 历史分页：`cursor` 向前翻页，`after_id` 向后增量，两者不能同时使用；游标查询多取一条判断 `next_cursor`。
+- 已读水位线：`GREATEST(last_read_message_id, ?)` 保证单调；超过当前最大 id 会钳制；新成员入组时初始化为当前最大消息 id。
+- 长轮询：先登记等待者再比较组版本号，避免丢通知；唤醒时预热组级缓存，2000 个等待者共享成员校验和消息快照。
+- 异步 HTTP：新增 `addAsyncRoute`；挂起期间不占 IO 线程，普通请求 10 秒定时器不作用于长轮询，pipeline 数据等当前响应后再解析。
+- 唤醒批处理：同一 IO 线程的任务队列从空变为非空时只写一次 eventfd，避免 2000 次重复唤醒；连接所属线程内的响应立即尝试写出，不排在批量任务之后。
+- 连接保护：每用户 5 条、每组 200 条、总计 4096 条挂起上限，超限返回 `429/3002`；送达、超时、对端断开都会注销等待者和定时器。
+- 可观测性：需要登录的 `GET /api/metrics` 返回 `pending_polls`，压测脚本用它确认连接真正进入挂起态。
+
+本机 P8 实测：`cofinance_chat_tests` 80 个检查点通过；CTest 9/9；真实 HTTP 全流程通过；2000 条并发挂起全部登记约 `504ms`，2000/2000 全部送达，完整耗时约 `177ms`；POST 返回约 `19.9ms`，首条响应在 POST 返回后约 `13.9ms` 可读到，即从发起发送到首条送达约 `34ms`，满足 V3 的 100ms 目标。P1 的 1000 连接回显、P2/P4–P7 真实 HTTP 回归全部通过；Valgrind 版 P8 HTTP 验收退出码为 `0`。

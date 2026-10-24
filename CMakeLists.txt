@@ -81,15 +81,19 @@ set(COFINANCE_CORE_SOURCES
     src/db/CategoryDao.cpp
     src/db/TransactionDao.cpp
     src/db/SettlementDao.cpp
+    src/db/MessageDao.cpp
     src/api/ApiSupport.cpp
     src/service/UserService.cpp
     src/service/GroupService.cpp
     src/service/LedgerService.cpp
     src/service/SettlementService.cpp
+    src/service/LongPollRegistry.cpp
+    src/service/ChatService.cpp
     src/api/UserApi.cpp
     src/api/GroupApi.cpp
     src/api/LedgerApi.cpp
     src/api/StatsApi.cpp
+    src/api/ChatApi.cpp
 )
 
 add_library(cofinance_core STATIC ${COFINANCE_CORE_SOURCES})
@@ -151,6 +155,10 @@ if(COFINANCE_BUILD_TESTS)
     target_link_libraries(cofinance_settlement_tests PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_settlement_tests)
 
+    add_executable(cofinance_chat_tests tests/unit/test_chat.cpp)
+    target_link_libraries(cofinance_chat_tests PRIVATE cofinance_core)
+    cofinance_enable_warnings(cofinance_chat_tests)
+
     add_executable(cofinance_echo_server tests/integration/echo_server_main.cpp)
     target_link_libraries(cofinance_echo_server PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_echo_server)
@@ -168,6 +176,8 @@ if(COFINANCE_BUILD_TESTS)
     add_test(NAME ledger COMMAND cofinance_ledger_tests
         ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
     add_test(NAME settlement COMMAND cofinance_settlement_tests
+        ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
+    add_test(NAME chat COMMAND cofinance_chat_tests
         ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
 endif()
 
