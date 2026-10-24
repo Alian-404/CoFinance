@@ -71,6 +71,8 @@ set(COFINANCE_CORE_SOURCES
     src/http/Router.cpp
     src/http/StaticFileHandler.cpp
     src/http/HttpServer.cpp
+    src/ai/LlmClient.cpp
+    src/ai/PromptBuilder.cpp
     src/ws/WebSocketProtocol.cpp
     src/ws/WebSocketHandshake.cpp
     src/ws/WebSocketSession.cpp
@@ -93,12 +95,14 @@ set(COFINANCE_CORE_SOURCES
     src/service/LongPollRegistry.cpp
     src/service/RealtimeRegistry.cpp
     src/service/ChatService.cpp
+    src/service/AiService.cpp
     src/api/UserApi.cpp
     src/api/GroupApi.cpp
     src/api/LedgerApi.cpp
     src/api/StatsApi.cpp
     src/api/ChatApi.cpp
     src/api/WebSocketApi.cpp
+    src/api/AiApi.cpp
 )
 
 add_library(cofinance_core STATIC ${COFINANCE_CORE_SOURCES})
@@ -168,6 +172,10 @@ if(COFINANCE_BUILD_TESTS)
     target_link_libraries(cofinance_ws_tests PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_ws_tests)
 
+    add_executable(cofinance_ai_tests tests/unit/test_ai.cpp)
+    target_link_libraries(cofinance_ai_tests PRIVATE cofinance_core)
+    cofinance_enable_warnings(cofinance_ai_tests)
+
     add_executable(cofinance_echo_server tests/integration/echo_server_main.cpp)
     target_link_libraries(cofinance_echo_server PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_echo_server)
@@ -189,6 +197,8 @@ if(COFINANCE_BUILD_TESTS)
     add_test(NAME chat COMMAND cofinance_chat_tests
         ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
     add_test(NAME ws COMMAND cofinance_ws_tests)
+    add_test(NAME ai COMMAND cofinance_ai_tests
+        ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
 endif()
 
 message(STATUS "构建类型: ${CMAKE_BUILD_TYPE} | 测试: ${COFINANCE_BUILD_TESTS} | 净化器: ${COFINANCE_SANITIZE}")

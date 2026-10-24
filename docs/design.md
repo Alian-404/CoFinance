@@ -103,7 +103,7 @@
 
 ### ADR-08 AI 模块独立线程池 + 外部依赖降级
 
-- 决策：AIService 走独立线程池调用 DeepSeek（libcurl + TLS），超时 10s，失败返回 503 + 可读提示；API Key 只放 config/secrets.conf（gitignore）。
+- 决策：AIService 走独立有界线程池调用 DeepSeek（libcurl + TLS），连接/总超时分离，失败返回可读降级；API Key 只放 config/secrets.conf（gitignore）。
 - 理由：外部 API 的延迟不可控，绝不能占用核心业务线程池，否则一次网络抖动会拖垮整个服务。
 - 代价：多一层线程池与结果回传机制；需要处理「用户已断开但 LLM 刚返回」的悬垂回调。
 
@@ -534,6 +534,15 @@ CREATE TABLE settlements (
 - 生命周期：成员退出、被移除、组解散在数据库事务提交后注销订阅；订阅后再次校验成员身份，封堵“握手校验完成后恰好被移除”的竞态窗口。
 - 可靠性：WebSocket 只做实时通知；断线期间的消息仍持久化在 MySQL，客户端重连后按 `server_max_id`/`after_id` 通过 HTTP 补拉并去重。
 
+**AI 异步调用（P10）**
+
+- 路由：两个 AI 接口注册为异步路由，HTTP 处理线程只完成鉴权、路径/JSON 校验和任务入队；返回 `Pending` 后连接等待完成回调，不阻塞 Reactor。
+- 线程池：默认 2 个工作线程、64 个队列槽位；任务在池内取统计、构造 prompt、执行 curl 请求。队列满直接返回 `503/2002`，避免外部依赖抖动向进程内存传导。
+- 降级：`llm.connect_timeout_ms` 与 `llm.timeout_ms` 分离；未配置 Key、上游 5xx/坏 JSON/超大响应返回 `503/2002`，超时返回 `504/2002`，核心记账与聊天接口不受影响。
+- 取消：客户端断开时取消令牌置位；curl progress callback 中止传输，工作线程在调用完成回调前再次检查令牌，防止向已释放连接回写。
+- 数据边界：prompt 只含当前月/上月聚合统计、分类占比与成员昵称级收支汇总；备注、用户名、逐笔明细、聊天内容和 API Key 均不进入 prompt。
+- 限流与缓存：每用户 5 次/分钟滑动窗口；省钱建议按组和聚合数据指纹缓存到 UTC 当日结束，账本变化后指纹变化，不会命中旧结果。
+
 ### 5.3 HTTP 层
 
 - 状态机解析：请求行 → 头字段 → 空行 → 按 Content-Length 读 body；关键在于半包（一次 read 拿到半个请求）与粘包（一次读到 1.5 个请求）都要正确处理，读缓冲剩余字节要留给下一次解析。
@@ -690,6 +699,8 @@ CREATE TABLE settlements (
 | POST | /api/groups/{gid}/ai/ask | 提问，body: {question}，返回 answer |
 | GET | /api/groups/{gid}/ai/suggestions | 生成省钱建议（可缓存当日结果） |
 
+响应统一为 `{"code":0,"msg":"ok","data":{...}}`。`ask` 返回 `answer`、`cached`、`elapsed_ms`、`model` 与当前统计区间；`suggestions` 同样返回这些字段，缓存命中时 `cached=true`。两个接口都要求正式组成员身份；未配置 Key 不影响其他业务接口。
+
 ## 7. 技术栈
 
 | 层级 | 技术选型 | 备注 |
@@ -739,7 +750,7 @@ CoFinance/
 │   ├── ai/                    # LlmClient, PromptBuilder
 │   └── util/                  # Config, Logger, Json, Crypto, TimeUtil
 ├── tests/
-│   ├── unit/                  # doctest 用例
+│   ├── unit/                  # P0-P10 单元测试
 │   └── integration/           # bash + curl 脚本
 ├── www/                       # 前端静态文件
 └── third_party/               # nlohmann/json、doctest（vendored，注明版本与许可）

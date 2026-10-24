@@ -156,6 +156,16 @@ void Config::validate(std::vector<std::string>* errors,
         {"db.port", 3306, 1, 65535},
         {"db.pool_size", 32, 1, 1000},
         {"db.connect_timeout_ms", 3000, 100, 60000},
+        {"llm.connect_timeout_ms", 3000, 100, 60000, false},
+        {"llm.timeout_ms", 10000, 100, 120000, false},
+        {"llm.max_tokens", 600, 32, 8192, false},
+        {"llm.max_response_bytes", 262144, 1024, 10485760, false},
+        {"llm.max_answer_bytes", 16384, 256, 1048576, false},
+        {"llm.worker_threads", 2, 1, 32, false},
+        {"llm.queue_capacity", 64, 1, 4096, false},
+        {"llm.rate_limit_per_minute", 5, 1, 1000, false},
+        {"llm.max_question_chars", 500, 1, 4000, false},
+        {"llm.suggestion_cache_capacity", 512, 1, 65536, false},
     };
     for (const RangeCheck& rc : kRanges) {
         const std::string raw = get(rc.key);
@@ -200,6 +210,16 @@ void Config::validate(std::vector<std::string>* errors,
     }
     if (getInt("db.pool_size", 32) > 100) {
         warn("db.pool_size 大于 100：本机 MySQL max_connections=151，过大的连接池会把数据库自己压垮");
+    }
+    const std::string llm_base = get("llm.base_url", "https://api.deepseek.com");
+    if (llm_base.rfind("https://", 0) != 0 && llm_base.rfind("http://", 0) != 0) {
+        err("llm.base_url 必须以 http:// 或 https:// 开头");
+    }
+    if (getInt("llm.connect_timeout_ms", 3000) > getInt("llm.timeout_ms", 10000)) {
+        err("llm.connect_timeout_ms 不能大于 llm.timeout_ms");
+    }
+    if (get("llm.api_key").empty()) {
+        warn("llm.api_key 未配置：AI 接口会返回 503，其余功能不受影响");
     }
 }
 

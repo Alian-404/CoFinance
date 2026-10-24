@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "cofinance/api/GroupApi.h"
+#include "cofinance/api/AiApi.h"
 #include "cofinance/api/ChatApi.h"
 #include "cofinance/api/LedgerApi.h"
 #include "cofinance/api/StatsApi.h"
@@ -18,6 +19,7 @@
 #include "cofinance/http/HttpServer.h"
 #include "cofinance/net/TcpServer.h"
 #include "cofinance/service/GroupService.h"
+#include "cofinance/service/AiService.h"
 #include "cofinance/service/ChatService.h"
 #include "cofinance/service/LedgerService.h"
 #include "cofinance/service/SettlementService.h"
@@ -170,7 +172,7 @@ int main(int argc, char** argv) {
              cofinance::Logger::levelName(log_cfg.level), log_cfg.dir.c_str(),
              log_cfg.queue_size, log_cfg.to_terminal ? "on" : "off");
     LOG_INFO("生效配置（敏感项已打码）:\n%s", cfg.redactedDump().c_str());
-    LOG_INFO("P9 实时聊天启动：WebSocket 握手/分片/心跳 + 成员级订阅生命周期");
+    LOG_INFO("P10 AI 助手启动：独立有界线程池 + 聚合 prompt + 超时/限流/缓存降级");
     LOG_DEBUG("这条 DEBUG 日志用于验证日志级别过滤，生产环境把 log.level 调成 INFO 就不会输出");
 
     // ---------- 5. MySQL 连接池 ----------
@@ -220,6 +222,33 @@ int main(int argc, char** argv) {
             chat_service.removeRealtimeForGroup(group_id);
         });
 
+    cofinance::service::AiConfig ai_cfg;
+    ai_cfg.worker_threads = static_cast<int>(cfg.getInt("llm.worker_threads", 2));
+    ai_cfg.queue_capacity = static_cast<std::size_t>(cfg.getInt("llm.queue_capacity", 64));
+    ai_cfg.rate_limit_per_minute =
+        static_cast<int>(cfg.getInt("llm.rate_limit_per_minute", 5));
+    ai_cfg.max_question_chars = static_cast<int>(cfg.getInt("llm.max_question_chars", 500));
+    ai_cfg.suggestion_cache_capacity =
+        static_cast<std::size_t>(cfg.getInt("llm.suggestion_cache_capacity", 512));
+    ai_cfg.llm.base_url = cfg.get("llm.base_url", "https://api.deepseek.com");
+    ai_cfg.llm.api_key = cfg.get("llm.api_key");
+    ai_cfg.llm.model = cfg.get("llm.model", "deepseek-chat");
+    ai_cfg.llm.connect_timeout_ms =
+        static_cast<int>(cfg.getInt("llm.connect_timeout_ms", 3000));
+    ai_cfg.llm.timeout_ms = static_cast<int>(cfg.getInt("llm.timeout_ms", 10000));
+    ai_cfg.llm.max_tokens = static_cast<int>(cfg.getInt("llm.max_tokens", 600));
+    ai_cfg.llm.max_response_bytes =
+        static_cast<std::size_t>(cfg.getInt("llm.max_response_bytes", 262144));
+    ai_cfg.llm.max_answer_bytes =
+        static_cast<std::size_t>(cfg.getInt("llm.max_answer_bytes", 16384));
+    cofinance::service::AiService ai_service(settlement_service, ai_cfg);
+    if (!ai_service.init(&err)) {
+        LOG_FATAL("AI 服务初始化失败: %s", err.c_str());
+        db_pool.shutdown();
+        cofinance::Logger::instance().shutdown();
+        return EXIT_FAILURE;
+    }
+
     // ---------- 6. HTTP 与主从 Reactor ----------
     cofinance::http::HttpServerConfig http_cfg;
     http_cfg.header_limit =
@@ -244,6 +273,7 @@ int main(int argc, char** argv) {
     cofinance::api::LedgerApi::registerRoutes(http_server, user_service, ledger_service);
     cofinance::api::StatsApi::registerRoutes(http_server, user_service, settlement_service);
     cofinance::api::ChatApi::registerRoutes(http_server, user_service, chat_service);
+    cofinance::api::AiApi::registerRoutes(http_server, user_service, ai_service);
     cofinance::ws::WebSocketSession::Config ws_config;
     ws_config.max_message_bytes = static_cast<std::size_t>(
         cfg.getInt("server.ws_max_message_bytes", 65536));
@@ -282,6 +312,7 @@ int main(int argc, char** argv) {
     }
 
     // ---------- 7. 优雅退出 ----------
+    ai_service.shutdown();
     db_pool.shutdown();
     LOG_INFO("收到退出信号，开始优雅退出（排空日志队列 → 刷盘 → 关闭文件）");
     const int64_t uptime_ms = cofinance::util::nowUtcMillis() - start_ms;

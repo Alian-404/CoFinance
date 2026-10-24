@@ -19,7 +19,7 @@
 | P7 | 统计与结算（净额、最少笔数转账） | ✅ 已完成（149 个检查点，真实 HTTP 全流程通过） |
 | P8 | 聊天 + 长轮询 | ✅ 已完成（80 个检查点，2000 并发挂起，valgrind 0 errors） |
 | P9 | WebSocket 升级 | ✅ 已完成（80 个检查点，CTest 10/10，真实推送 7.1ms） |
-| P10 | AI 助手（DeepSeek） | ⬜ |
+| P10 | AI 助手（DeepSeek） | ✅ 已完成（57 个检查点，CTest 11/11，慢模型不阻塞 IO） |
 | P11 | 前端整合 + 压测 + 文档收尾 | ⬜ |
 
 ## 构建与运行
@@ -58,7 +58,8 @@ cmake --build build -j16
 ./build/cofinance_settlement_tests config/server.conf sql/schema.sql # P7：统计/净额/结算 149 个检查点
 ./build/cofinance_chat_tests config/server.conf sql/schema.sql # P8：聊天/幂等/已读/长轮询 80 个检查点
 ./build/cofinance_ws_tests                 # P9：握手/帧/分片/心跳/订阅表 80 个检查点
-ctest --test-dir build                     # 通过 CTest 运行十组单测（需 MySQL）
+./build/cofinance_ai_tests config/server.conf sql/schema.sql # P10：prompt/超时/限流/缓存/取消 57 个检查点
+ctest --test-dir build                     # 通过 CTest 运行十一组单测（需 MySQL）
 
 # P1 集成验收（脚本自动创建临时端口、1000 条连接、回显、CPU 与优雅退出）
 ulimit -n 65535
@@ -88,6 +89,9 @@ python3 tests/integration/p8_chat_check.py --stress 2000
 # P9 集成验收（握手、双向消息、分片、Ping/Pong、断线补拉、成员移除清理）
 python3 tests/integration/p9_ws_check.py
 
+# P10 集成验收（本地 mock DeepSeek；prompt 脱敏、缓存、超时、限流、异步隔离）
+python3 tests/integration/p10_ai_check.py
+
 # 泄漏检查（ASan 与 valgrind 不能同时启用，故单独一个构建目录）
 cmake -S . -B build-nosan -DCOFINANCE_SANITIZE=OFF && cmake --build build-nosan -j16
 python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance_echo_server \
@@ -99,6 +103,7 @@ python3 tests/integration/p6_ledger_check.py --binary build-nosan/cofinance --va
 python3 tests/integration/p7_settlement_check.py --binary build-nosan/cofinance --valgrind
 python3 tests/integration/p8_chat_check.py --binary build-nosan/cofinance --valgrind
 python3 tests/integration/p9_ws_check.py --binary build-nosan/cofinance --valgrind
+python3 tests/integration/p10_ai_check.py --binary build-nosan/cofinance --valgrind
 valgrind --leak-check=full --show-leak-kinds=definite,indirect \
     --errors-for-leak-kinds=definite,indirect --error-exitcode=9 \
     ./build-nosan/cofinance_db_tests config/server.conf sql/schema.sql
@@ -123,7 +128,7 @@ CoFinance/
 │   ├── ai/                 # LLM 调用（P10）
 │   └── util/               # 配置、日志、通用工具
 ├── tests/
-│   ├── unit/                # P0-P9 单元测试
+│   ├── unit/                # P0-P10 单元测试
 │   └── integration/         # 真实服务验收与 P1 echo 测试服务
 ├── www/                    # 静态文件根目录（P2 先放占位首页，P11 扩展前端）
 └── third_party/            # 第三方单头库（如需 vendor）
@@ -277,3 +282,15 @@ CoFinance/
 - 配置：`server.ws_max_message_bytes`、`ws_heartbeat_interval_ms`、`ws_idle_timeout_ms`、`ws_max_per_user`、`ws_max_per_group`、`ws_max_total` 均有安全默认值。
 
 本机 P9 实测：`cofinance_ws_tests` 80 个检查点通过；CTest 10/10；真实 WebSocket 握手、HTTP→WS 推送、WS→HTTP 落库、分片文本、Ping/Pong、关闭、断线补拉、成员移除清理全部通过；单次 HTTP 发消息到 WS 收到推送约 `7.1ms`；P1、P2、P4–P8 集成回归通过；Valgrind 版 P9 验收 `0 errors`。
+
+## 已实现的技术要点（P10）
+
+- 异步隔离：`/api/groups/{gid}/ai/ask` 与 `/ai/suggestions` 使用异步路由，HTTP IO 线程只做鉴权、参数校验与入队；统计查询、prompt 构造和 LLM 网络等待由独立有界线程池执行。
+- 数据最小化：prompt 只含本月/上月聚合总额、分类占比和成员昵称级汇总；不发送用户名、备注、逐笔明细、聊天内容或余额明细。
+- 外部依赖降级：libcurl + TLS 调用 DeepSeek OpenAI 兼容接口，连接/总超时分离，响应体与 answer 均有大小上限；未配置 Key、超时或上游异常分别返回可读的 `503/2002`、`504/2002`。
+- 取消传播：客户端断开后，HTTP 层取消令牌会触发 curl progress callback 中止网络等待；工作线程在回调前再次检查取消状态，避免向已销毁连接投递结果。
+- 防滥用：每用户 5 次/分钟滑动窗口限流，超限返回 `429/3001`；线程池使用有界队列，队列满时快速失败，不让故障无限堆积。
+- 建议缓存：按“组 + 当月/上月聚合数据指纹”缓存到 UTC 当日结束；数据变化会生成新 key，避免把旧建议当作新账本结论。
+- 注入防护：系统提示把问题、昵称和分类名都声明为数据，并以 JSON 传入；模型被要求只依据聚合数据回答、不泄露系统提示与配置。
+
+本机 P10 实测：`cofinance_ai_tests` 57 个检查点通过；CTest 11/11；真实 HTTP + 本地 mock LLM 完成提问、建议缓存、越权、无效参数、上游 500/坏 JSON/超大响应、600ms 超时、客户端断开取消和每用户限流验收；mock 提问端到端约 `9ms`，LLM 慢请求期间 `/api/ping` 约 `1.0ms`；P2、P4–P9 集成回归通过；Valgrind 版 P10 验收以 `--error-exitcode=9` 通过。
