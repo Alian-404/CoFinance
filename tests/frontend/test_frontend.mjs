@@ -19,6 +19,27 @@ import {
   overlapAfterId,
 } from '../../www/assets/js/core/messages.js';
 import { parseRoute } from '../../www/assets/js/core/router.js';
+import { calendarCells, monthLabel, shiftMonth } from '../../www/assets/js/core/date-picker.js';
+import { api, setUnauthorizedHandler } from '../../www/assets/js/core/api.js';
+import { getToken, setToken } from '../../www/assets/js/core/session.js';
+
+class MemoryStorage {
+  constructor(entries = {}) {
+    this.values = new Map(Object.entries(entries));
+  }
+
+  getItem(key) {
+    return this.values.has(key) ? this.values.get(key) : null;
+  }
+
+  setItem(key, value) {
+    this.values.set(key, String(value));
+  }
+
+  removeItem(key) {
+    this.values.delete(key);
+  }
+}
 
 test('金额解析拒绝零和负数，但允许非负分摊零值', () => {
   assert.deepEqual(parseMoneyToCents('12.34'), { ok: true, cents: 1234 });
@@ -108,4 +129,81 @@ test('日期筛选拒绝越界日期和不存在的自然日', () => {
   assert.equal(isValidDayValue('2026-02-30', limits), false);
   assert.equal(isValidDayValue('1999-12-31', limits), false);
   assert.equal(isValidDayValue('2026-10-25', limits), false);
+});
+
+test('日历按周一开头生成完整六周网格并禁用越界日期', () => {
+  const cells = calendarCells(2026, 10, { min: '2000-01-01', max: '2026-10-24' });
+  assert.equal(cells.length, 42);
+  assert.equal(cells[3].value, '2026-10-01');
+  assert.equal(cells[26].value, '2026-10-24');
+  assert.equal(cells[26].disabled, false);
+  assert.equal(cells[27].disabled, true);
+  assert.equal(cells[3 + 30].value, '2026-10-31');
+  assert.equal(monthLabel(2026, 10), '2026 年 10 月');
+});
+
+test('日历翻页支持跨年并限制在可选月份内', () => {
+  const bounds = { min: '2000-01-01', max: '2026-10-24' };
+  assert.deepEqual(shiftMonth(2026, 1, -1, bounds), { year: 2025, month: 12 });
+  assert.deepEqual(shiftMonth(2026, 10, 1, bounds), { year: 2026, month: 10 });
+  assert.deepEqual(shiftMonth(2026, 1, -1, { min: '2026-01-01', max: '2026-10-24' }), { year: 2026, month: 1 });
+  assert.deepEqual(shiftMonth(2025, 12, 12, bounds), { year: 2026, month: 10 });
+});
+
+test('令牌写入标签页存储，并迁移旧的持久令牌', () => {
+  const originalSession = globalThis.sessionStorage;
+  const originalLocal = globalThis.localStorage;
+  const tab = new MemoryStorage();
+  const persistent = new MemoryStorage({ 'cofinance.token.v1': 'legacy-token' });
+  globalThis.sessionStorage = tab;
+  globalThis.localStorage = persistent;
+  try {
+    assert.equal(getToken(), 'legacy-token');
+    assert.equal(tab.getItem('cofinance.token.v1'), 'legacy-token');
+    assert.equal(persistent.getItem('cofinance.token.v1'), null);
+    setToken('tab-a');
+    assert.equal(tab.getItem('cofinance.token.v1'), 'tab-a');
+    assert.equal(persistent.getItem('cofinance.token.v1'), null);
+  } finally {
+    setToken('');
+    globalThis.sessionStorage = originalSession;
+    globalThis.localStorage = originalLocal;
+  }
+});
+
+test('旧密码错误不清理登录态，真实会话失效才清理', async () => {
+  const originalSession = globalThis.sessionStorage;
+  const originalLocal = globalThis.localStorage;
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  let unauthorizedCalls = 0;
+  globalThis.sessionStorage = new MemoryStorage();
+  globalThis.localStorage = new MemoryStorage();
+  globalThis.window = { setTimeout, clearTimeout };
+  setUnauthorizedHandler(() => { unauthorizedCalls += 1; });
+  setToken('session-a');
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({ code: 1007, msg: '旧密码错误', data: null }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    await assert.rejects(api.changePassword('wrong', 'NewPassword123'), (error) => error.code === 1007);
+    assert.equal(getToken(), 'session-a');
+    assert.equal(unauthorizedCalls, 0);
+
+    globalThis.fetch = async () => new Response(JSON.stringify({ code: 1002, msg: '登录已失效', data: null }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    await assert.rejects(api.me(), (error) => error.code === 1002);
+    assert.equal(getToken(), '');
+    assert.equal(unauthorizedCalls, 1);
+  } finally {
+    setUnauthorizedHandler(null);
+    setToken('');
+    globalThis.fetch = originalFetch;
+    globalThis.window = originalWindow;
+    globalThis.sessionStorage = originalSession;
+    globalThis.localStorage = originalLocal;
+  }
 });

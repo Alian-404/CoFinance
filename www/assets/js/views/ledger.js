@@ -2,6 +2,7 @@ import { html, mount, qs, qsa, clearFieldErrors, setFieldError } from '../core/d
 import { api } from '../core/api.js';
 import { icon } from '../core/icons.js';
 import { categoryEmoji, categoryTone } from '../core/categories.js';
+import { createDatePicker } from '../core/date-picker.js';
 import {
   avatar,
   confirmDialog,
@@ -34,6 +35,7 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
   let loadError = null;
   let items = [];
   let nextCursor = null;
+  let datePicker = null;
   const emptyFilters = { category_id: '', payer_id: '', date: '' };
   let filters = { ...emptyFilters };
 
@@ -108,6 +110,8 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
   }
 
   function render() {
+    datePicker?.destroy();
+    datePicker = null;
     if (loading) {
       mount(root, loadingBlock('正在翻阅流水…'));
       return;
@@ -150,10 +154,13 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
                 ${memberOptions(filters.payer_id)}
               </select>
             </label>
-            <label class="field">
-              <span>交易日期</span>
-              <input class="input" type="date" name="date" value="${filters.date}" min="2000-01-01" max="${localDayValue()}" title="点击右侧日历图标选择日期">
-            </label>
+            <div class="field">
+              <span id="ledger-date-label">交易日期</span>
+              <div class="date-control" data-date-picker>
+                <input class="input" type="text" name="date" value="${filters.date}" min="2000-01-01" max="${localDayValue()}" placeholder="YYYY-MM-DD" inputmode="numeric" autocomplete="off" aria-labelledby="ledger-date-label" title="可直接输入，或点右侧日历选择">
+                <button class="date-picker-trigger" type="button" data-date-picker-trigger aria-label="打开日历" aria-expanded="false">${icon('calendar')}</button>
+              </div>
+            </div>
             <button class="button button-secondary" type="submit">${icon('filter')}筛选</button>
           </div>
         </form>
@@ -242,6 +249,11 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
   }
 
   function bind() {
+    datePicker = createDatePicker({
+      input: qs('[data-date-picker] input[name="date"]', root),
+      min: '2000-01-01',
+      max: localDayValue(),
+    });
     qs('[data-action="new-transaction"]', root)?.addEventListener('click', () => openTransactionModal(null));
     qsa('[data-action="new-transaction"]', root).forEach((button) => {
       if (!button.closest('.empty-state')) {
@@ -544,5 +556,11 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
   }
 
   load();
-  return { cleanup: () => activeController?.abort() };
+  return {
+    cleanup: () => {
+      activeController?.abort();
+      datePicker?.destroy();
+      datePicker = null;
+    },
+  };
 }

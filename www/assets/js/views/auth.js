@@ -83,7 +83,7 @@ export function renderAuth({ mode = 'login', onAuthenticated }) {
           </p>
           <div class="auth-note">
             ${icon('lock')}
-            <span>密码使用 PBKDF2 加盐存储，登录凭证只保存在当前浏览器中。公共电脑使用后请退出。</span>
+            <span>密码使用 PBKDF2 加盐存储，登录凭证只保存在当前标签页中。公共电脑使用后请退出。</span>
           </div>
         </div>
       </section>

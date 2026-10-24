@@ -606,9 +606,11 @@ export function renderSettings({
       toast('密码已更新，其它设备的会话已失效', 'success');
     } catch (error) {
       if (error.code === 1007) {
-        setFieldError(form, 'old_password', friendlyError(error));
+        setFieldError(form, 'old_password', '当前密码不正确，请重新输入');
+        form.elements.old_password.focus();
+      } else {
+        toast(friendlyError(error), 'error', 4800);
       }
-      toast(friendlyError(error), 'error', 4800);
     } finally {
       setBusy(button, false);
     }
