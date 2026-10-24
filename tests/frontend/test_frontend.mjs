@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   centsToInput,
   formatMoney,
+  isValidDayValue,
   localDayRangeUtc,
   parseMoneyToCents,
   parseNonNegativeMoneyToCents,
@@ -98,4 +99,13 @@ test('本地日期范围转成 UTC 半开区间', () => {
   assert.ok(range.from.endsWith('Z'));
   assert.ok(range.to.endsWith('Z'));
   assert.ok(new Date(range.from) < new Date(range.to));
+});
+
+test('日期筛选拒绝越界日期和不存在的自然日', () => {
+  const limits = { min: '2000-01-01', max: '2026-10-24' };
+  assert.equal(isValidDayValue('2026-10-24', limits), true);
+  assert.equal(isValidDayValue('20666-01-01', limits), false);
+  assert.equal(isValidDayValue('2026-02-30', limits), false);
+  assert.equal(isValidDayValue('1999-12-31', limits), false);
+  assert.equal(isValidDayValue('2026-10-25', limits), false);
 });

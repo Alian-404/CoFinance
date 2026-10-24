@@ -107,7 +107,7 @@ export function renderOverview({ root, gid, group, members, goTab }) {
               </div>
               <div class="hero-foot">
                 <div class="hero-metric"><span>收入</span><strong>${formatMoney(summary.total_income_cents || 0)}</strong></div>
-                <div class="hero-metric"><span>净支出</span><strong>${formatMoney(summary.net_expense_cents || 0)}</strong></div>
+                <div class="hero-metric"><span>当前金额</span><strong>${formatMoney((summary.total_income_cents || 0) - (summary.total_expense_cents || 0), { signed: true })}</strong></div>
                 <div class="hero-metric"><span>交易</span><strong>${summary.transaction_count || 0} 笔</strong></div>
                 <div class="hero-metric"><span>待结清人数</span><strong>${activeBalances.length} 人</strong></div>
               </div>

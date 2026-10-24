@@ -130,8 +130,8 @@ export function renderWorkspace({ gid, tab, onSignedOut }) {
         <div class="sidebar-footer">
           <a class="button button-secondary button-wide" href="#/groups">${icon('plus')}管理或新建组</a>
           <div class="sidebar-account">
-            ${avatar(state.user, { size: 'sm' })}
-            <div class="sidebar-account-copy"><span class="sidebar-account-name">${displayName(state.user)}</span><span class="sidebar-account-handle">@${state.user?.username || ''}</span></div>
+            <span data-user-avatar data-avatar-size="sm">${avatar(state.user, { size: 'sm' })}</span>
+            <div class="sidebar-account-copy"><span class="sidebar-account-name" data-user-name>${displayName(state.user)}</span><span class="sidebar-account-handle" data-user-handle>@${state.user?.username || ''}</span></div>
             <button class="icon-button" type="button" data-action="user-settings" aria-label="账号设置">${icon('settings', 'icon-sm')}</button>
           </div>
         </div>
@@ -160,8 +160,8 @@ export function renderWorkspace({ gid, tab, onSignedOut }) {
                 <span class="notification-dot" data-invite-count ${invites.length ? '' : 'hidden'}>${invites.length > 9 ? '9+' : invites.length}</span>
               </button>
               <button class="topbar-user" type="button" data-action="user-settings" aria-label="打开账号设置">
-                ${avatar(state.user, { size: 'sm' })}
-                <span class="topbar-user-name">${displayName(state.user)}</span>
+                <span data-user-avatar data-avatar-size="sm">${avatar(state.user, { size: 'sm' })}</span>
+                <span class="topbar-user-name" data-user-name>${displayName(state.user)}</span>
               </button>
             </div>
           </header>
@@ -229,8 +229,22 @@ export function renderWorkspace({ gid, tab, onSignedOut }) {
     }
   }
 
+  function updateUserChrome() {
+    qsa('[data-user-avatar]', app).forEach((slot) => {
+      mount(slot, avatar(state.user, { size: slot.dataset.avatarSize || 'sm' }));
+    });
+    qsa('[data-user-name]', app).forEach((element) => {
+      element.textContent = displayName(state.user);
+    });
+    qsa('[data-user-handle]', app).forEach((element) => {
+      element.textContent = `@${state.user?.username || ''}`;
+    });
+  }
+
   function mountTab(tab) {
-    currentCleanup?.();
+    if (typeof currentCleanup === 'function') {
+      currentCleanup();
+    }
     currentCleanup = null;
     currentTab = tab;
     qsa('[data-tab]', app).forEach((link) => link.classList.toggle('is-active', link.dataset.tab === tab));
@@ -285,8 +299,7 @@ export function renderWorkspace({ gid, tab, onSignedOut }) {
         },
         onUserUpdated(user) {
           state.user = user;
-          renderShell();
-          mountTab(currentTab);
+          updateUserChrome();
         },
         onGroupDeleted() {
           state.groupsLoaded = false;
@@ -298,7 +311,7 @@ export function renderWorkspace({ gid, tab, onSignedOut }) {
           onSignedOut?.();
           navigate('/login');
         },
-      });
+      }).cleanup;
     }
   }
 
@@ -373,7 +386,9 @@ export function renderWorkspace({ gid, tab, onSignedOut }) {
     },
     cleanup() {
       dataController.abort();
-      currentCleanup?.();
+      if (typeof currentCleanup === 'function') {
+        currentCleanup();
+      }
       currentCleanup = null;
       closeModal();
     },

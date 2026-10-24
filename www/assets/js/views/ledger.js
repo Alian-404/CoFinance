@@ -18,10 +18,11 @@ import {
   displayName,
   formatDateTime,
   formatMoney,
+  isValidDayValue,
+  localDayValue,
   localDayRangeUtc,
   parseMoneyToCents,
   parseNonNegativeMoneyToCents,
-  transactionTypeLabel,
   uuid,
 } from '../core/format.js';
 
@@ -33,12 +34,13 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
   let loadError = null;
   let items = [];
   let nextCursor = null;
-  let filters = { category_id: '', payer_id: '', fromDate: '', toDate: '' };
+  const emptyFilters = { category_id: '', payer_id: '', date: '' };
+  let filters = { ...emptyFilters };
 
   mount(root, loadingBlock('正在翻阅流水…'));
 
   function filterQuery() {
-    const range = localDayRangeUtc(filters.fromDate, filters.toDate);
+    const range = localDayRangeUtc(filters.date, filters.date);
     return {
       category_id: filters.category_id,
       payer_id: filters.payer_id,
@@ -48,16 +50,18 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
     };
   }
 
-  async function load({ reset = true } = {}) {
+  async function load({ reset = true, quiet = false } = {}) {
     const id = ++requestId;
     activeController?.abort();
     activeController = new AbortController();
     if (reset) {
-      loading = true;
-      items = [];
-      nextCursor = null;
       loadError = null;
-      render();
+      if (!quiet) {
+        loading = true;
+        items = [];
+        nextCursor = null;
+        render();
+      }
     } else {
       loadingMore = true;
       render();
@@ -78,6 +82,10 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
       render();
     } catch (error) {
       if (error.aborted || id !== requestId) {
+        return;
+      }
+      if (quiet) {
+        toast('流水已提交，但列表刷新失败，可稍后手动刷新', 'warning', 4800);
         return;
       }
       loading = false;
@@ -126,7 +134,7 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
           </div>
         </div>
 
-        <form class="card filter-card" data-filter-form>
+        <form class="card filter-card" data-filter-form novalidate>
           <div class="filter-row">
             <label class="field">
               <span>分类</span>
@@ -143,12 +151,8 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
               </select>
             </label>
             <label class="field">
-              <span>开始日期</span>
-              <input class="input" type="date" name="fromDate" value="${filters.fromDate}">
-            </label>
-            <label class="field">
-              <span>结束日期</span>
-              <input class="input" type="date" name="toDate" value="${filters.toDate}">
+              <span>交易日期</span>
+              <input class="input" type="date" name="date" value="${filters.date}" min="2000-01-01" max="${localDayValue()}" title="点击右侧日历图标选择日期">
             </label>
             <button class="button button-secondary" type="submit">${icon('filter')}筛选</button>
           </div>
@@ -214,7 +218,7 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
                 <div class="mini-stat"><span>支出</span><strong class="text-expense">${formatMoney(expenses)}</strong></div>
                 <div class="mini-stat"><span>收入</span><strong class="text-income">${formatMoney(incomes)}</strong></div>
                 <div class="mini-stat"><span>笔数</span><strong>${items.length}</strong></div>
-                <div class="mini-stat"><span>净支出</span><strong>${formatMoney(expenses - incomes)}</strong></div>
+                <div class="mini-stat"><span>当前金额</span><strong>${formatMoney(incomes - expenses, { signed: true })}</strong></div>
               </div>
             </section>
 
@@ -248,16 +252,21 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
     qs('[data-filter-form]', root)?.addEventListener('submit', (event) => {
       event.preventDefault();
       const form = event.currentTarget;
+      const dateInput = form.elements.date;
+      if (dateInput.validity?.badInput || (dateInput.value && !isValidDayValue(dateInput.value, { min: '2000-01-01', max: localDayValue() }))) {
+        setFieldError(form, 'date', dateInput.value ? '交易日期必须在 2000-01-01 到今天之间' : '请输入有效日期');
+        dateInput.focus();
+        return;
+      }
       filters = {
         category_id: form.elements.category_id.value,
         payer_id: form.elements.payer_id.value,
-        fromDate: form.elements.fromDate.value,
-        toDate: form.elements.toDate.value,
+        date: dateInput.value,
       };
       load();
     });
     qs('[data-action="clear-filter"]', root)?.addEventListener('click', () => {
-      filters = { category_id: '', payer_id: '', fromDate: '', toDate: '' };
+      filters = { ...emptyFilters };
       load();
     });
     qs('[data-action="load-more"]', root)?.addEventListener('click', () => load({ reset: false }));
@@ -502,14 +511,29 @@ export function renderLedger({ root, gid, group, members, categories, currentUse
       setBusy(submit, true, editing ? '保存中…' : '记账中…');
       try {
         if (editing) {
-          await api.updateTransaction(gid, existing.id, payload);
+          const updated = await api.updateTransaction(gid, existing.id, payload);
+          modal.close();
+          items = items.map((item) => (String(item.id) === String(updated.id) ? updated : item));
+          render();
           toast('交易已更新', 'success');
         } else {
-          await api.createTransaction(gid, payload);
-          toast('已记下这笔共同开销', 'success');
+          const created = await api.createTransaction(gid, payload);
+          modal.close();
+          const hadFilters = Object.values(filters).some(Boolean);
+          if (hadFilters) {
+            filters = { ...emptyFilters };
+          }
+          items = [created, ...items.filter((item) => String(item.id) !== String(created.id))]
+            .sort((left, right) => Number(right.id) - Number(left.id));
+          render();
+          toast(
+            hadFilters
+              ? '已记录，并清除筛选以显示这笔流水'
+              : payload.type === 1 ? '已记下这笔收入' : '已记下这笔开销',
+            'success',
+          );
         }
-        modal.close();
-        await load();
+        await load({ quiet: true });
       } catch (error) {
         mount(errorArea, html`<div class="notice notice-danger">${icon('alert')}<span>${friendlyError(error)}</span></div>`);
         setBusy(submit, false);

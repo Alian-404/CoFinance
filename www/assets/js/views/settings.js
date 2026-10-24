@@ -195,9 +195,9 @@ export function renderSettings({
                 <div><h3>账号与安全</h3><p>这些设置会作用于你的所有账本。</p></div>
               </div>
               <div class="account-summary">
-                ${avatar({ ...localUser, avatar_url: selectedAvatar }, { size: 'lg' })}
+                <span data-account-avatar>${avatar({ ...localUser, avatar_url: selectedAvatar }, { size: 'lg' })}</span>
                 <div class="account-summary-copy">
-                  <h3>${displayName(localUser)}</h3>
+                  <h3 data-account-name>${displayName(localUser)}</h3>
                   <p class="muted">@${localUser.username} · 用户 ID ${localUser.id}</p>
                 </div>
               </div>
@@ -277,6 +277,7 @@ export function renderSettings({
       selectedAvatar = button.dataset.avatarChoice || '';
       qsa('[data-avatar-choice]', root).forEach((item) => item.classList.toggle('is-selected', item === button));
       qs('[data-profile-form] input[name="avatar_url"]', root).value = selectedAvatar;
+      updateProfileSummary();
     }));
     qs('[data-password-form]', root)?.addEventListener('submit', changePassword);
     qs('[data-action="logout"]', root)?.addEventListener('click', () => logout(false));
@@ -562,14 +563,24 @@ export function renderSettings({
       const updated = await api.updateProfile({ nickname, avatar_url: selectedAvatar });
       localUser = { ...localUser, ...updated };
       selectedAvatar = localUser.avatar_url || '';
+      updateProfileSummary();
       onUserUpdated?.(localUser);
       toast('个人资料已更新', 'success');
-      if (!onUserUpdated) {
-        render();
-      }
+      setBusy(button, false);
     } catch (error) {
       toast(friendlyError(error), 'error', 4800);
       setBusy(button, false);
+    }
+  }
+
+  function updateProfileSummary() {
+    const avatarSlot = qs('[data-account-avatar]', root);
+    if (avatarSlot) {
+      mount(avatarSlot, avatar({ ...localUser, avatar_url: selectedAvatar }, { size: 'lg' }));
+    }
+    const name = qs('[data-account-name]', root);
+    if (name) {
+      name.textContent = displayName(localUser);
     }
   }
 
