@@ -26,7 +26,11 @@ public:
                   int* role, std::uint64_t* member_count, ServiceError* error);
     bool renameGroup(std::uint64_t user_id, std::uint64_t group_id, const std::string& name,
                      db::GroupRecord* group, ServiceError* error);
-    bool dissolveGroup(std::uint64_t user_id, std::uint64_t group_id, ServiceError* error);
+    bool dissolveGroup(std::uint64_t user_id, std::uint64_t group_id, bool force,
+                       ServiceError* error);
+    bool dissolveGroup(std::uint64_t user_id, std::uint64_t group_id, ServiceError* error) {
+        return dissolveGroup(user_id, group_id, false, error);
+    }
 
     bool listMembers(std::uint64_t user_id, std::uint64_t group_id,
                      std::vector<db::MembershipRecord>* members, ServiceError* error);

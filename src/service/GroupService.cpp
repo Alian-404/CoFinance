@@ -6,9 +6,13 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "cofinance/db/ConnectionPool.h"
+#include "cofinance/db/SettlementDao.h"
 #include "cofinance/db/TransactionGuard.h"
 #include "cofinance/db/UserDao.h"
+#include "cofinance/service/SettlementService.h"
 #include "cofinance/util/Logger.h"
 
 namespace cofinance {
@@ -86,6 +90,53 @@ bool requireOwner(db::GroupDao& groups, std::uint64_t group_id, std::uint64_t us
         return false;
     }
     return true;
+}
+
+bool loadBalances(db::MySqlConnection& connection, std::uint64_t group_id,
+                  std::vector<db::BalanceRecord>* balances, ServiceError* error,
+                  std::string* db_error) {
+    if (!SettlementService::calculateBalances(connection, group_id, balances, db_error)) {
+        setDatabaseError(error, "计算组成员余额", *db_error);
+        return false;
+    }
+    return true;
+}
+
+bool userHasOutstandingBalance(const std::vector<db::BalanceRecord>& balances,
+                               std::uint64_t user_id, bool* outstanding) {
+    *outstanding = false;
+    for (const db::BalanceRecord& balance : balances) {
+        if (balance.user_id == user_id) {
+            *outstanding = balance.balance_cents != 0;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool groupHasOutstandingBalance(const std::vector<db::BalanceRecord>& balances) {
+    for (const db::BalanceRecord& balance : balances) {
+        if (balance.balance_cents != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string dissolveSnapshot(const std::vector<db::BalanceRecord>& balances) {
+    nlohmann::json snapshot;
+    snapshot["event"] = "forced_dissolve";
+    snapshot["generated_at"] = util::formatUtcMillis(util::nowUtcMillis());
+    snapshot["balances"] = nlohmann::json::array();
+    for (const db::BalanceRecord& balance : balances) {
+        if (balance.balance_cents == 0) {
+            continue;
+        }
+        snapshot["balances"].push_back({{"user_id", balance.user_id},
+                                        {"username", balance.username},
+                                        {"balance_cents", balance.balance_cents}});
+    }
+    return snapshot.dump();
 }
 
 }  // namespace
@@ -258,7 +309,7 @@ bool GroupService::renameGroup(std::uint64_t user_id, std::uint64_t group_id,
     return true;
 }
 
-bool GroupService::dissolveGroup(std::uint64_t user_id, std::uint64_t group_id,
+bool GroupService::dissolveGroup(std::uint64_t user_id, std::uint64_t group_id, bool force,
                                  ServiceError* error) {
     std::string db_error;
     auto lease = pool_.acquire(-1, &db_error);
@@ -279,6 +330,21 @@ bool GroupService::dissolveGroup(std::uint64_t user_id, std::uint64_t group_id,
     std::optional<db::MembershipRecord> member;
     if (!requireOwner(groups, group_id, user_id, &member, error, &db_error)) {
         return false;
+    }
+    std::vector<db::BalanceRecord> balances;
+    if (!loadBalances(lease.connection(), group_id, &balances, error, &db_error)) {
+        return false;
+    }
+    if (groupHasOutstandingBalance(balances)) {
+        if (!force) {
+            setError(error, 409, 1015, "存在未结清余额，请先结算或使用 force=true 强制解散");
+            return false;
+        }
+        db::SettlementDao settlements(lease.connection());
+        if (!settlements.insertSystemMessage(group_id, dissolveSnapshot(balances), &db_error)) {
+            setDatabaseError(error, "写入解散余额快照", db_error);
+            return false;
+        }
     }
     if (!groups.dissolveGroup(group_id, &db_error)) {
         setDatabaseError(error, "解散财务组", db_error);
@@ -466,6 +532,19 @@ bool GroupService::removeMember(std::uint64_t user_id, std::uint64_t group_id,
         setError(error, 400, 1017, "目标用户不是可移除的组员");
         return false;
     }
+    std::vector<db::BalanceRecord> balances;
+    if (!loadBalances(lease.connection(), group_id, &balances, error, &db_error)) {
+        return false;
+    }
+    bool outstanding = false;
+    if (!userHasOutstandingBalance(balances, target_user_id, &outstanding)) {
+        setDatabaseError(error, "读取待移除成员余额", "成员余额记录缺失");
+        return false;
+    }
+    if (outstanding) {
+        setError(error, 409, 1015, "目标成员仍有未结清余额，不能移除");
+        return false;
+    }
     if (!groups.setMembershipStatus(target->id, 4, &db_error)) {
         setDatabaseError(error, "移除组成员", db_error);
         return false;
@@ -501,6 +580,19 @@ bool GroupService::leaveGroup(std::uint64_t user_id, std::uint64_t group_id,
     }
     if (member->role == 0) {
         setError(error, 400, 1017, "组长必须先转让或解散组");
+        return false;
+    }
+    std::vector<db::BalanceRecord> balances;
+    if (!loadBalances(lease.connection(), group_id, &balances, error, &db_error)) {
+        return false;
+    }
+    bool outstanding = false;
+    if (!userHasOutstandingBalance(balances, user_id, &outstanding)) {
+        setDatabaseError(error, "读取退组成员余额", "成员余额记录缺失");
+        return false;
+    }
+    if (outstanding) {
+        setError(error, 409, 1015, "仍有未结清余额，请先完成结算");
         return false;
     }
     if (!groups.setMembershipStatus(member->id, 3, &db_error)) {

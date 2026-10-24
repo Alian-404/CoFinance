@@ -32,6 +32,11 @@ int64_t nowMonotonicMillis();
 std::string formatUtcMillis(int64_t ms, bool with_date = true);
 std::string utcDateString(int64_t ms);
 
+// 把 API 的 UTC 时间边界规范化为 MySQL DATETIME 文本。
+// 日期形式 YYYY-MM-DD 作为 from 时取 00:00:00，作为 to 时取 23:59:59。
+bool parseUtcBoundary(const std::string& raw, bool end_of_day, std::string* db_value,
+                      std::string* detail);
+
 // Linux 内核视角的线程 id（不是 std::thread::id）。
 // 用途：gdb、perf top、strace 里看到的就是这个数字，排查多线程问题时可对齐
 int64_t threadId();

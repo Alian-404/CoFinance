@@ -7,6 +7,8 @@
 #include <cctype>
 #include <ctime>
 #include <cstring>
+#include <iomanip>
+#include <sstream>
 #include <string>
 
 namespace cofinance {
@@ -83,6 +85,93 @@ bool iequals(const std::string& a, const std::string& b) {
             return false;
         }
     }
+    return true;
+}
+
+namespace {
+
+bool parseFixedInt(const std::string& text, std::size_t pos, std::size_t length, int* value) {
+    int parsed = 0;
+    for (std::size_t i = 0; i < length; ++i) {
+        const char c = text[pos + i];
+        if (c < '0' || c > '9') {
+            return false;
+        }
+        parsed = parsed * 10 + (c - '0');
+    }
+    *value = parsed;
+    return true;
+}
+
+bool leapYear(int year) {
+    return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+int daysInMonth(int year, int month) {
+    static const int days[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month == 2 && leapYear(year)) {
+        return 29;
+    }
+    return days[month];
+}
+
+}  // namespace
+
+bool parseUtcBoundary(const std::string& raw, bool end_of_day, std::string* db_value,
+                      std::string* detail) {
+    if (raw.size() != 10 && raw.size() != 20 && raw.size() != 24) {
+        *detail = "时间必须是 YYYY-MM-DD 或 YYYY-MM-DDTHH:MM:SSZ";
+        return false;
+    }
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    if (!parseFixedInt(raw, 0, 4, &year) || raw[4] != '-' ||
+        !parseFixedInt(raw, 5, 2, &month) || raw[7] != '-' ||
+        !parseFixedInt(raw, 8, 2, &day)) {
+        *detail = "时间格式错误";
+        return false;
+    }
+    if (raw.size() >= 20) {
+        if (raw[10] != 'T' || raw[13] != ':' || raw[16] != ':') {
+            *detail = "时间格式错误";
+            return false;
+        }
+        if (!parseFixedInt(raw, 11, 2, &hour) || !parseFixedInt(raw, 14, 2, &minute) ||
+            !parseFixedInt(raw, 17, 2, &second)) {
+            *detail = "时间格式错误";
+            return false;
+        }
+        if (raw.size() == 20 && raw[19] != 'Z') {
+            *detail = "时间必须使用 UTC 的 Z 后缀";
+            return false;
+        }
+        if (raw.size() == 24) {
+            if (raw[19] != '.' || raw[23] != 'Z' || raw[20] < '0' || raw[20] > '9' ||
+                raw[21] < '0' || raw[21] > '9' || raw[22] < '0' || raw[22] > '9') {
+                *detail = "时间毫秒格式错误";
+                return false;
+            }
+        }
+    } else if (end_of_day) {
+        hour = 23;
+        minute = 59;
+        second = 59;
+    }
+    if (year < 1970 || year > 9999 || month < 1 || month > 12 || day < 1 ||
+        day > daysInMonth(year, month) || hour < 0 || hour > 23 || minute < 0 ||
+        minute > 59 || second < 0 || second > 59) {
+        *detail = "时间超出合法范围";
+        return false;
+    }
+    std::ostringstream out;
+    out << std::setfill('0') << std::setw(4) << year << '-' << std::setw(2) << month << '-'
+        << std::setw(2) << day << ' ' << std::setw(2) << hour << ':' << std::setw(2)
+        << minute << ':' << std::setw(2) << second;
+    *db_value = out.str();
     return true;
 }
 

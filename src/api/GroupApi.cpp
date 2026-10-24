@@ -79,6 +79,28 @@ bool authenticate(const HttpRequest& request, UserService& users, AuthContext* c
     return support::authenticateRequest(request, users, context, error);
 }
 
+bool parseForce(const HttpRequest& request, bool* force, HttpResponse* error) {
+    std::string raw;
+    bool found = false;
+    if (!support::queryValue(request.query, "force", &raw, &found)) {
+        *error = support::badRequest("查询参数编码无效: force");
+        return false;
+    }
+    *force = false;
+    if (!found) {
+        return true;
+    }
+    if (raw == "true" || raw == "1") {
+        *force = true;
+        return true;
+    }
+    if (raw == "false" || raw == "0") {
+        return true;
+    }
+    *error = support::badRequest("force 只能是 true/false 或 1/0");
+    return false;
+}
+
 }  // namespace
 
 void GroupApi::registerRoutes(http::HttpServer& server, UserService& users,
@@ -184,8 +206,13 @@ void GroupApi::registerRoutes(http::HttpServer& server, UserService& users,
                         if (!pathId(request, "gid", &group_id, &error)) {
                             return error;
                         }
+                        bool force = false;
+                        if (!parseForce(request, &force, &error)) {
+                            return error;
+                        }
                         ServiceError service_error;
-                        if (!groups.dissolveGroup(context.user.id, group_id, &service_error)) {
+                        if (!groups.dissolveGroup(context.user.id, group_id, force,
+                                                  &service_error)) {
                             return support::errorResult(service_error);
                         }
                         return support::jsonResult(200, 0, "ok");

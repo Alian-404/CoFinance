@@ -9,6 +9,7 @@
 #include "cofinance/db/GroupDao.h"
 #include "cofinance/db/SessionDao.h"
 #include "cofinance/db/TransactionGuard.h"
+#include "cofinance/service/SettlementService.h"
 #include "cofinance/util/Crypto.h"
 #include "cofinance/util/Logger.h"
 
@@ -485,6 +486,18 @@ bool UserService::deleteAccount(const AuthContext& context, ServiceError* error)
         if (group->owner_id == context.user.id || active_member_owner) {
             setError(error, 400, 1017, "请先转让组长或解散组，再注销账号");
             return false;
+        }
+        std::vector<db::BalanceRecord> balances;
+        if (!SettlementService::calculateBalances(lease.connection(), group_id, &balances,
+                                                  &db_error)) {
+            setDatabaseError(error, "计算注销用户余额", db_error);
+            return false;
+        }
+        for (const db::BalanceRecord& balance : balances) {
+            if (balance.user_id == context.user.id && balance.balance_cents != 0) {
+                setError(error, 409, 1015, "仍有未结清余额，请先完成结算再注销账号");
+                return false;
+            }
         }
     }
 
