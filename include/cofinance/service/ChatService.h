@@ -11,6 +11,7 @@
 
 #include "cofinance/db/MessageDao.h"
 #include "cofinance/service/LongPollRegistry.h"
+#include "cofinance/service/RealtimeRegistry.h"
 #include "cofinance/service/UserService.h"
 #include "cofinance/util/Common.h"
 
@@ -46,7 +47,8 @@ struct UnreadState {
 
 class ChatService : private NonCopyable {
 public:
-    explicit ChatService(db::ConnectionPool& pool, LongPollLimits poll_limits = {});
+    explicit ChatService(db::ConnectionPool& pool, LongPollLimits poll_limits = {},
+                         RealtimeLimits realtime_limits = {});
 
     bool sendMessage(std::uint64_t user_id, std::uint64_t group_id,
                      const std::string& content,
@@ -74,6 +76,15 @@ public:
     std::uint64_t groupVersion(std::uint64_t group_id) const;
     std::size_t pendingPolls() const { return poll_registry_.size(); }
 
+    bool openRealtime(std::uint64_t user_id, std::uint64_t group_id,
+                      RealtimeRegistry::MessageCallback callback,
+                      std::uint64_t* subscription_id, std::uint64_t* server_max_id,
+                      ServiceError* error);
+    void removeRealtime(std::uint64_t subscription_id);
+    void removeRealtimeForUser(std::uint64_t group_id, std::uint64_t user_id);
+    void removeRealtimeForGroup(std::uint64_t group_id);
+    std::size_t realtimeConnections() const { return realtime_registry_.size(); }
+
 private:
     struct PollCache {
         bool valid = false;
@@ -87,6 +98,7 @@ private:
     void warmPollCache(std::uint64_t group_id);
     db::ConnectionPool& pool_;
     LongPollRegistry poll_registry_;
+    RealtimeRegistry realtime_registry_;
     mutable std::mutex poll_cache_mutex_;
     std::unordered_map<std::uint64_t, PollCache> poll_cache_;
     std::unordered_map<std::uint64_t, std::uint64_t> group_versions_;

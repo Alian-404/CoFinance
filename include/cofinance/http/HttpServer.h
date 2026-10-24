@@ -31,6 +31,7 @@ public:
     void setHealthCheck(HealthCheck check);
     void addRoute(std::string method, std::string path, Router::Handler handler);
     void addAsyncRoute(std::string method, std::string path, Router::AsyncHandler handler);
+    void addUpgradeRoute(std::string path, Router::UpgradeHandler handler);
 
     bool init(std::string* err);
     void onConnection(const net::TcpConnectionPtr& connection);
@@ -39,6 +40,8 @@ private:
     friend class HttpConnection;
 
     DispatchResult handleRequest(HttpRequest& request, const AsyncContext& context) const;
+    std::optional<UpgradeDecision> handleUpgrade(HttpRequest& request,
+                                                 const UpgradeContext& context) const;
     static HttpResponse errorResponse(int status);
 
     HttpServerConfig cfg_;

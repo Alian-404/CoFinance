@@ -194,6 +194,29 @@ void testRouter() {
     CHECK(!response.has_value());
 }
 
+void testUpgradeRouter() {
+    std::printf("[case] HTTP Upgrade 路由\n");
+    cofinance::http::Router router;
+    router.addUpgrade("/api/ws", [](cofinance::http::HttpRequest&,
+                                    const cofinance::http::UpgradeContext&) {
+        cofinance::http::UpgradeDecision decision;
+        decision.switched = true;
+        return decision;
+    });
+    cofinance::http::HttpRequest request;
+    request.method = "GET";
+    request.path = "/api/ws";
+    cofinance::http::UpgradeContext context;
+    auto decision = router.dispatchUpgrade(request, context);
+    CHECK(decision.has_value());
+    CHECK(decision->switched);
+    request.method = "POST";
+    CHECK(!router.dispatchUpgrade(request, context).has_value());
+    request.method = "GET";
+    request.path = "/api/other";
+    CHECK(!router.dispatchUpgrade(request, context).has_value());
+}
+
 void testStaticFiles() {
     std::printf("[case] 静态文件与路径穿越\n");
     const std::filesystem::path root = "/tmp/cofinance_p2_www";
@@ -238,6 +261,7 @@ int main() {
     testParserErrors();
     testHttp10KeepAlive();
     testRouter();
+    testUpgradeRouter();
     testStaticFiles();
     std::printf("=== 检查点 %d 个, 失败 %d 个 ===\n", g_checks, g_failed);
     return g_failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

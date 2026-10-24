@@ -137,8 +137,9 @@ bool loadReadState(db::MessageDao& messages, std::uint64_t group_id, std::uint64
 
 }  // namespace
 
-ChatService::ChatService(db::ConnectionPool& pool, LongPollLimits poll_limits)
-    : pool_(pool), poll_registry_(poll_limits) {}
+ChatService::ChatService(db::ConnectionPool& pool, LongPollLimits poll_limits,
+                         RealtimeLimits realtime_limits)
+    : pool_(pool), poll_registry_(poll_limits), realtime_registry_(realtime_limits) {}
 
 bool ChatService::sendMessage(std::uint64_t user_id, std::uint64_t group_id,
                               const std::string& content,
@@ -242,6 +243,7 @@ bool ChatService::sendMessage(std::uint64_t user_id, std::uint64_t group_id,
         ++group_versions_[group_id];
     }
     notifyGroup(group_id);
+    realtime_registry_.notify(group_id, *message);
     return true;
 }
 
@@ -411,6 +413,62 @@ bool ChatService::registerWaiter(std::uint64_t user_id, std::uint64_t group_id,
 
 void ChatService::removeWaiter(std::uint64_t waiter_id) {
     poll_registry_.remove(waiter_id);
+}
+
+bool ChatService::openRealtime(std::uint64_t user_id, std::uint64_t group_id,
+                               RealtimeRegistry::MessageCallback callback,
+                               std::uint64_t* subscription_id, std::uint64_t* server_max_id,
+                               ServiceError* error) {
+    if (subscription_id == nullptr || server_max_id == nullptr || !callback) {
+        setError(error, 500, 2001, "服务器内部错误");
+        return false;
+    }
+    std::string db_error;
+    auto lease = pool_.acquire(-1, &db_error);
+    if (!lease) {
+        setDatabaseError(error, "获取数据库连接", db_error);
+        return false;
+    }
+    db::GroupDao groups(lease.connection());
+    if (!requireActiveGroupAndMember(groups, group_id, user_id, error, &db_error)) {
+        return false;
+    }
+
+    const RealtimeRegisterResult result = realtime_registry_.add(
+        group_id, user_id, std::move(callback), subscription_id);
+    if (result != RealtimeRegisterResult::Ok) {
+        setError(error, 429, 3003, "实时连接数超限");
+        return false;
+    }
+
+    // 成员校验与订阅写入不是同一个数据库事务；若移除请求恰好夹在两者之间，
+    // GroupService 的注销回调可能先执行。订阅后再次校验，可封堵该竞态窗口。
+    if (!requireActiveGroupAndMember(groups, group_id, user_id, error, &db_error)) {
+        realtime_registry_.remove(*subscription_id);
+        *subscription_id = 0;
+        return false;
+    }
+
+    db::MessageDao messages(lease.connection());
+    if (!messages.maxId(group_id, server_max_id, &db_error)) {
+        realtime_registry_.remove(*subscription_id);
+        *subscription_id = 0;
+        setDatabaseError(error, "读取实时连接初始消息 id", db_error);
+        return false;
+    }
+    return true;
+}
+
+void ChatService::removeRealtime(std::uint64_t subscription_id) {
+    realtime_registry_.remove(subscription_id);
+}
+
+void ChatService::removeRealtimeForUser(std::uint64_t group_id, std::uint64_t user_id) {
+    realtime_registry_.removeForUser(group_id, user_id);
+}
+
+void ChatService::removeRealtimeForGroup(std::uint64_t group_id) {
+    realtime_registry_.removeForGroup(group_id);
 }
 
 void ChatService::notifyGroup(std::uint64_t group_id) {

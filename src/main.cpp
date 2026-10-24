@@ -13,6 +13,7 @@
 #include "cofinance/api/LedgerApi.h"
 #include "cofinance/api/StatsApi.h"
 #include "cofinance/api/UserApi.h"
+#include "cofinance/api/WebSocketApi.h"
 #include "cofinance/db/ConnectionPool.h"
 #include "cofinance/http/HttpServer.h"
 #include "cofinance/net/TcpServer.h"
@@ -169,7 +170,7 @@ int main(int argc, char** argv) {
              cofinance::Logger::levelName(log_cfg.level), log_cfg.dir.c_str(),
              log_cfg.queue_size, log_cfg.to_terminal ? "on" : "off");
     LOG_INFO("生效配置（敏感项已打码）:\n%s", cfg.redactedDump().c_str());
-    LOG_INFO("P8 聊天系统启动：消息幂等 + 游标分页 + 已读水位线 + 事件驱动长轮询");
+    LOG_INFO("P9 实时聊天启动：WebSocket 握手/分片/心跳 + 成员级订阅生命周期");
     LOG_DEBUG("这条 DEBUG 日志用于验证日志级别过滤，生产环境把 log.level 调成 INFO 就不会输出");
 
     // ---------- 5. MySQL 连接池 ----------
@@ -203,7 +204,21 @@ int main(int argc, char** argv) {
         static_cast<std::size_t>(cfg.getInt("server.long_poll_max_per_group", 200));
     poll_limits.total =
         static_cast<std::size_t>(cfg.getInt("server.long_poll_max_total", 4096));
-    cofinance::service::ChatService chat_service(db_pool, poll_limits);
+    cofinance::service::RealtimeLimits realtime_limits;
+    realtime_limits.per_user =
+        static_cast<std::size_t>(cfg.getInt("server.ws_max_per_user", 5));
+    realtime_limits.per_group =
+        static_cast<std::size_t>(cfg.getInt("server.ws_max_per_group", 200));
+    realtime_limits.total =
+        static_cast<std::size_t>(cfg.getInt("server.ws_max_total", 4096));
+    cofinance::service::ChatService chat_service(db_pool, poll_limits, realtime_limits);
+    group_service.setRealtimeRevokeCallbacks(
+        [&chat_service](std::uint64_t group_id, std::uint64_t user_id) {
+            chat_service.removeRealtimeForUser(group_id, user_id);
+        },
+        [&chat_service](std::uint64_t group_id) {
+            chat_service.removeRealtimeForGroup(group_id);
+        });
 
     // ---------- 6. HTTP 与主从 Reactor ----------
     cofinance::http::HttpServerConfig http_cfg;
@@ -229,6 +244,15 @@ int main(int argc, char** argv) {
     cofinance::api::LedgerApi::registerRoutes(http_server, user_service, ledger_service);
     cofinance::api::StatsApi::registerRoutes(http_server, user_service, settlement_service);
     cofinance::api::ChatApi::registerRoutes(http_server, user_service, chat_service);
+    cofinance::ws::WebSocketSession::Config ws_config;
+    ws_config.max_message_bytes = static_cast<std::size_t>(
+        cfg.getInt("server.ws_max_message_bytes", 65536));
+    ws_config.heartbeat_interval_ms =
+        static_cast<int>(cfg.getInt("server.ws_heartbeat_interval_ms", 30000));
+    ws_config.idle_timeout_ms =
+        static_cast<int>(cfg.getInt("server.ws_idle_timeout_ms", 90000));
+    cofinance::api::WebSocketApi::registerRoutes(http_server, user_service, chat_service,
+                                                 ws_config);
 
     cofinance::net::TcpServerConfig net_cfg;
     net_cfg.host = cfg.get("server.host", "0.0.0.0");

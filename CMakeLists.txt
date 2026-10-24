@@ -71,6 +71,9 @@ set(COFINANCE_CORE_SOURCES
     src/http/Router.cpp
     src/http/StaticFileHandler.cpp
     src/http/HttpServer.cpp
+    src/ws/WebSocketProtocol.cpp
+    src/ws/WebSocketHandshake.cpp
+    src/ws/WebSocketSession.cpp
     src/db/MySqlConnection.cpp
     src/db/PreparedStatement.cpp
     src/db/ConnectionPool.cpp
@@ -88,12 +91,14 @@ set(COFINANCE_CORE_SOURCES
     src/service/LedgerService.cpp
     src/service/SettlementService.cpp
     src/service/LongPollRegistry.cpp
+    src/service/RealtimeRegistry.cpp
     src/service/ChatService.cpp
     src/api/UserApi.cpp
     src/api/GroupApi.cpp
     src/api/LedgerApi.cpp
     src/api/StatsApi.cpp
     src/api/ChatApi.cpp
+    src/api/WebSocketApi.cpp
 )
 
 add_library(cofinance_core STATIC ${COFINANCE_CORE_SOURCES})
@@ -159,6 +164,10 @@ if(COFINANCE_BUILD_TESTS)
     target_link_libraries(cofinance_chat_tests PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_chat_tests)
 
+    add_executable(cofinance_ws_tests tests/unit/test_ws.cpp)
+    target_link_libraries(cofinance_ws_tests PRIVATE cofinance_core)
+    cofinance_enable_warnings(cofinance_ws_tests)
+
     add_executable(cofinance_echo_server tests/integration/echo_server_main.cpp)
     target_link_libraries(cofinance_echo_server PRIVATE cofinance_core)
     cofinance_enable_warnings(cofinance_echo_server)
@@ -179,6 +188,7 @@ if(COFINANCE_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
     add_test(NAME chat COMMAND cofinance_chat_tests
         ${CMAKE_SOURCE_DIR}/config/server.conf ${CMAKE_SOURCE_DIR}/sql/schema.sql)
+    add_test(NAME ws COMMAND cofinance_ws_tests)
 endif()
 
 message(STATUS "构建类型: ${CMAKE_BUILD_TYPE} | 测试: ${COFINANCE_BUILD_TESTS} | 净化器: ${COFINANCE_SANITIZE}")

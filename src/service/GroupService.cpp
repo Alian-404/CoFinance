@@ -1,6 +1,7 @@
 #include "cofinance/service/GroupService.h"
 
 #include <cstdint>
+#include <exception>
 #include <optional>
 #include <string>
 #include <utility>
@@ -140,6 +141,39 @@ std::string dissolveSnapshot(const std::vector<db::BalanceRecord>& balances) {
 }
 
 }  // namespace
+
+void GroupService::setRealtimeRevokeCallbacks(RealtimeMemberRevoke member_revoke,
+                                               RealtimeGroupRevoke group_revoke) {
+    realtime_member_revoke_ = std::move(member_revoke);
+    realtime_group_revoke_ = std::move(group_revoke);
+}
+
+void GroupService::notifyMemberRevoked(std::uint64_t group_id,
+                                       std::uint64_t user_id) noexcept {
+    if (!realtime_member_revoke_) {
+        return;
+    }
+    try {
+        realtime_member_revoke_(group_id, user_id);
+    } catch (const std::exception& e) {
+        LOG_ERROR("注销成员实时订阅失败：%s", e.what());
+    } catch (...) {
+        LOG_ERROR("注销成员实时订阅时抛出未知异常");
+    }
+}
+
+void GroupService::notifyGroupRevoked(std::uint64_t group_id) noexcept {
+    if (!realtime_group_revoke_) {
+        return;
+    }
+    try {
+        realtime_group_revoke_(group_id);
+    } catch (const std::exception& e) {
+        LOG_ERROR("注销组实时订阅失败：%s", e.what());
+    } catch (...) {
+        LOG_ERROR("注销组实时订阅时抛出未知异常");
+    }
+}
 
 GroupService::GroupService(db::ConnectionPool& pool) : pool_(pool) {}
 
@@ -354,6 +388,7 @@ bool GroupService::dissolveGroup(std::uint64_t user_id, std::uint64_t group_id, 
         setDatabaseError(error, "提交解散组事务", db_error);
         return false;
     }
+    notifyGroupRevoked(group_id);
     return true;
 }
 
@@ -553,6 +588,7 @@ bool GroupService::removeMember(std::uint64_t user_id, std::uint64_t group_id,
         setDatabaseError(error, "提交移除成员事务", db_error);
         return false;
     }
+    notifyMemberRevoked(group_id, target_user_id);
     return true;
 }
 
@@ -603,6 +639,7 @@ bool GroupService::leaveGroup(std::uint64_t user_id, std::uint64_t group_id,
         setDatabaseError(error, "提交退出组事务", db_error);
         return false;
     }
+    notifyMemberRevoked(group_id, user_id);
     return true;
 }
 

@@ -38,6 +38,20 @@ bool TcpConnection::start(std::string* err) {
     return true;
 }
 
+void TcpConnection::setIdleTimeoutMs(int timeout_ms) {
+    idle_timeout_ms_ = timeout_ms;
+    if (closed_) {
+        return;
+    }
+    if (idle_timer_id_ != 0) {
+        loop_->cancelTimer(idle_timer_id_);
+        idle_timer_id_ = 0;
+    }
+    if (idle_timeout_ms_ > 0) {
+        refreshIdleTimer();
+    }
+}
+
 void TcpConnection::send(std::string_view data) {
     if (closed_ || data.empty()) {
         return;
@@ -161,8 +175,11 @@ void TcpConnection::handleRead() {
 
     if (got_data) {
         refreshIdleTimer();
-        if (message_cb_) {
-            message_cb_(shared_from_this(), input_);
+        // 业务回调可能把连接升级为 WebSocket 并替换 message_cb_；必须先复制，
+        // 否则赋值会析构“正在执行”的 std::function，造成 use-after-free。
+        MessageCallback callback = message_cb_;
+        if (callback) {
+            callback(shared_from_this(), input_);
         } else {
             input_.clear();
         }
@@ -294,10 +311,21 @@ void TcpConnection::releaseResources(bool notify) {
     }
 
     message_cb_ = nullptr;
-    CloseCallback callback = std::move(close_cb_);
+    std::vector<CloseCallback> callbacks;
+    callbacks.reserve(close_cbs_.size() + (close_cb_ ? 1 : 0));
+    if (close_cb_) {
+        callbacks.push_back(std::move(close_cb_));
+    }
     close_cb_ = nullptr;
-    if (notify && callback) {
-        callback(closed_fd);
+    callbacks.insert(callbacks.end(), std::make_move_iterator(close_cbs_.begin()),
+                     std::make_move_iterator(close_cbs_.end()));
+    close_cbs_.clear();
+    if (notify) {
+        for (CloseCallback& callback : callbacks) {
+            if (callback) {
+                callback(closed_fd);
+            }
+        }
     }
 }
 

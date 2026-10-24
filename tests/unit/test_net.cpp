@@ -101,9 +101,11 @@ void testConnectionIdleTimeout() {
     CHECK(loop.init(&err));
 
     bool closed = false;
+    bool appended = false;
     auto connection = std::make_shared<cofinance::net::TcpConnection>(&loop, fds[1], "socketpair",
                                                                      30);
     connection->setCloseCallback([&closed](int) { closed = true; });
+    connection->addCloseCallback([&appended](int) { appended = true; });
     CHECK(connection->start(&err));
 
     const std::int64_t deadline = cofinance::util::nowMonotonicMillis() + 1000;
@@ -111,6 +113,7 @@ void testConnectionIdleTimeout() {
         loop.pollOnce(100);
     }
     CHECK(closed);
+    CHECK(appended);
 }
 
 }  // namespace

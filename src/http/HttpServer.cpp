@@ -77,6 +77,23 @@ public:
                 return;
             }
 
+            UpgradeContext upgrade_context{connection, &input};
+            std::optional<UpgradeDecision> upgrade = server_->handleUpgrade(
+                request, upgrade_context);
+            if (upgrade.has_value()) {
+                if (upgrade->switched) {
+                    cancelRequestTimer();
+                    request_started_ = false;
+                    return;
+                }
+                closing_ = true;
+                HttpResponse response = std::move(upgrade->rejection);
+                connection->send(response.serialize(false, request.method == "HEAD"));
+                input.clear();
+                connection->shutdownAfterWrite();
+                return;
+            }
+
             DispatchResult routed;
             try {
                 routed = server_->handleRequest(request, makeAsyncContext());
@@ -302,6 +319,10 @@ void HttpServer::addAsyncRoute(std::string method, std::string path,
     router_.addAsync(std::move(method), std::move(path), std::move(handler));
 }
 
+void HttpServer::addUpgradeRoute(std::string path, Router::UpgradeHandler handler) {
+    router_.addUpgrade(std::move(path), std::move(handler));
+}
+
 bool HttpServer::init(std::string* err) {
     static_files_ = std::make_unique<StaticFileHandler>(cfg_.static_root);
     if (!static_files_->init(err)) {
@@ -347,6 +368,11 @@ DispatchResult HttpServer::handleRequest(HttpRequest& request,
         return DispatchResult{DispatchStatus::Complete, static_files_->handle(request)};
     }
     return DispatchResult{DispatchStatus::Complete, errorResponse(404)};
+}
+
+std::optional<UpgradeDecision> HttpServer::handleUpgrade(
+    HttpRequest& request, const UpgradeContext& context) const {
+    return router_.dispatchUpgrade(request, context);
 }
 
 HttpResponse HttpServer::errorResponse(int status) {

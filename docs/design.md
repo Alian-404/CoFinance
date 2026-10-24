@@ -16,7 +16,7 @@
 | 已读状态 | messages.is_read | group_members.last_read_message_id | 一条消息在多人组里没有唯一的「已读位」 |
 | 鉴权 | 「返回 token 或 session」，无对应表 | sessions 表 + token 只存哈希 | 原设计无法落地 |
 | 密码 | SHA256 加盐 | PBKDF2-HMAC-SHA256，10 万次迭代 | 单次 SHA256 抗不住 GPU 爆破 |
-| 实时通道 | 「WebSocket 或长轮询」（未定） | P8 先长轮询，P9 再升级 WebSocket | 先打通全链路，再上难度，风险可控 |
+| 实时通道 | 长轮询 + WebSocket 双通道 | P8 长轮询，P9 WebSocket；HTTP 负责持久化与补拉 | 低延迟推送与可靠补拉分离 |
 | 代码复用 | 复用 TinyWebServer | 全部从零实现 | 已确认；秋招需要能讲清每一行 |
 | API 风格 | /api/register 动词式 | RESTful 资源式 | 更规范，也更容易讲出设计理由 |
 | 交付物 | 只有代码 | 代码 + 原理笔记 + 踩坑记录 + 面试问答 | 秋招的胜负手是「能讲清楚」 |
@@ -83,11 +83,11 @@
 - 理由：DB 泄漏时 token 无法直接使用；相比 JWT 不需要引入额外库，且天然支持「登出即失效」「踢下线」——JWT 反而做不到。
 - 代价：每个请求多一次 sessions 查询（可加本地 LRU 缓存优化）；多实例部署需要共享存储。
 
-### ADR-05 实时通道：长轮询先行，WebSocket 后补
+### ADR-05 实时通道：长轮询先行，WebSocket 后补，最终双通道并存
 
 - 决策：P8 实现长轮询（GET /api/groups/{id}/messages/poll?after_id=&timeout=30），P9 再实现 WebSocket 升级。
 - 理由：长轮询能复用已有 HTTP 层快速跑通全链路；WebSocket 需要握手、帧解析、掩码、分片、心跳，属于本项目最重的一块，放在全链路稳定之后做。
-- 代价：长轮询有连接空转开销，且正确实现「不占用线程池线程」是本项目最大的并发难点（见 5.2）。
+- 代价：长轮询有连接空转开销；WebSocket 增加握手、帧状态机、掩码、分片与心跳复杂度。P9 完成后两条通道共用同一消息提交通知，但客户端仍以 HTTP 增量拉取作为断线恢复的可靠兜底。
 
 ### ADR-06 HTTP 层自研，只做必需子集
 
@@ -524,6 +524,16 @@ CREATE TABLE settlements (
 
 按 id 增量拉取还有一个必须处理的前提：自增 id 的「分配顺序」不等于「提交顺序」（ADR-15）。因此服务端返回的 server_max_id 不能直接当成不可回退的水位线，客户端必须做「重叠窗口 + 按 id 去重」，否则高并发下会静默漏消息。这类「看起来对、压力下才错」的问题，正是 P8 要用并发压测 + 消息完整性校验（发 N 条收 N 条）反复验证的部分。
 
+**WebSocket 升级（P9）**
+
+- 握手：校验 `Upgrade: websocket`、`Connection: Upgrade`、版本 13 与 16 字节 Base64 key；服务端返回原始 `101` 与 `Sec-WebSocket-Accept = Base64(SHA1(key + GUID))`。
+- 帧解析：HTTP 头之后可能紧跟首帧，因此 Upgrade 成功时把当前读缓冲剩余字节直接交给 WebSocket 会话；之后该连接的 message callback 不再进入 HTTP 解析器。
+- 掩码与分片：客户端帧必须掩码；控制帧不能分片且载荷不超过 125 字节；文本分片按 `Text(FIN=0) + Continuation... + Continuation(FIN=1)` 聚合后再统一校验 UTF-8。
+- 心跳：连接从全局 HTTP 空闲定时器切换到 WebSocket 会话定时器；30s 发 Ping，90s 无入站活动用 1001 关闭，避免僵尸连接长期占用订阅名额。
+- 推送：`RealtimeRegistry` 在锁内复制订阅回调，锁外执行；回调只把任务 `runInLoop` 回连接所属 worker，绝不跨线程写 socket。
+- 生命周期：成员退出、被移除、组解散在数据库事务提交后注销订阅；订阅后再次校验成员身份，封堵“握手校验完成后恰好被移除”的竞态窗口。
+- 可靠性：WebSocket 只做实时通知；断线期间的消息仍持久化在 MySQL，客户端重连后按 `server_max_id`/`after_id` 通过 HTTP 补拉并去重。
+
 ### 5.3 HTTP 层
 
 - 状态机解析：请求行 → 头字段 → 空行 → 按 Content-Length 读 body；关键在于半包（一次 read 拿到半个请求）与粘包（一次读到 1.5 个请求）都要正确处理，读缓冲剩余字节要留给下一次解析。
@@ -670,6 +680,8 @@ CREATE TABLE settlements (
 | WS | /api/ws?token=&group_id= | WebSocket 长连接（P9，握手后升级） |
 
 > 长轮询参数语义（ADR-15）：after_id 缺省表示「只拉此刻之后的新消息」（以服务端当前最大 id 为下界，不是从 0 开始全量拉）；非空表示拉取 id > after_id。响应形如 `{"items":[...], "server_max_id": 1234}`。客户端下次以 server_max_id − 20 作为 after_id 回拉并按 id 去重，用于规避自增 id 提交乱序导致的漏消息。
+
+> WebSocket 入口使用 query token（浏览器原生 WebSocket 不能自定义 Authorization 头），但服务端日志只记录 path、不记录 query。连接后事件：客户端发 `{"type":"send","content":"...","client_msg_id":"<uuid>"}` 或 `{"type":"read","last_read_message_id":N}`；服务端发 `ready`、`message`、`ack`、`read`、`error`。token 只在握手时鉴权，客户端应设置重连与 HTTP 补拉策略。
 
 ### 6.7 AI（P10）
 

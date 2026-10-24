@@ -18,7 +18,7 @@
 | P6 | 记账（交易、分摊、分页筛选） | ✅ 已完成（110 个检查点，真实 HTTP 全流程通过） |
 | P7 | 统计与结算（净额、最少笔数转账） | ✅ 已完成（149 个检查点，真实 HTTP 全流程通过） |
 | P8 | 聊天 + 长轮询 | ✅ 已完成（80 个检查点，2000 并发挂起，valgrind 0 errors） |
-| P9 | WebSocket 升级 | ⬜ |
+| P9 | WebSocket 升级 | ✅ 已完成（80 个检查点，CTest 10/10，真实推送 7.1ms） |
 | P10 | AI 助手（DeepSeek） | ⬜ |
 | P11 | 前端整合 + 压测 + 文档收尾 | ⬜ |
 
@@ -57,7 +57,8 @@ cmake --build build -j16
 ./build/cofinance_ledger_tests config/server.conf sql/schema.sql # P6：交易/分摊/幂等 110 个检查点
 ./build/cofinance_settlement_tests config/server.conf sql/schema.sql # P7：统计/净额/结算 149 个检查点
 ./build/cofinance_chat_tests config/server.conf sql/schema.sql # P8：聊天/幂等/已读/长轮询 80 个检查点
-ctest --test-dir build                     # 通过 CTest 运行九组单测（需 MySQL）
+./build/cofinance_ws_tests                 # P9：握手/帧/分片/心跳/订阅表 80 个检查点
+ctest --test-dir build                     # 通过 CTest 运行十组单测（需 MySQL）
 
 # P1 集成验收（脚本自动创建临时端口、1000 条连接、回显、CPU 与优雅退出）
 ulimit -n 65535
@@ -84,6 +85,9 @@ python3 tests/integration/p8_chat_check.py
 # P8 并发验收：2000 条长轮询挂起，全部送达
 python3 tests/integration/p8_chat_check.py --stress 2000
 
+# P9 集成验收（握手、双向消息、分片、Ping/Pong、断线补拉、成员移除清理）
+python3 tests/integration/p9_ws_check.py
+
 # 泄漏检查（ASan 与 valgrind 不能同时启用，故单独一个构建目录）
 cmake -S . -B build-nosan -DCOFINANCE_SANITIZE=OFF && cmake --build build-nosan -j16
 python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance_echo_server \
@@ -94,6 +98,7 @@ python3 tests/integration/p5_group_check.py --binary build-nosan/cofinance --val
 python3 tests/integration/p6_ledger_check.py --binary build-nosan/cofinance --valgrind
 python3 tests/integration/p7_settlement_check.py --binary build-nosan/cofinance --valgrind
 python3 tests/integration/p8_chat_check.py --binary build-nosan/cofinance --valgrind
+python3 tests/integration/p9_ws_check.py --binary build-nosan/cofinance --valgrind
 valgrind --leak-check=full --show-leak-kinds=definite,indirect \
     --errors-for-leak-kinds=definite,indirect --error-exitcode=9 \
     ./build-nosan/cofinance_db_tests config/server.conf sql/schema.sql
@@ -103,7 +108,7 @@ valgrind --leak-check=full --show-leak-kinds=definite,indirect \
 
 ```
 CoFinance/
-├── CMakeLists.txt          # 核心库、主程序、九组单测与 P1 echo 验收服务
+├── CMakeLists.txt          # 核心库、主程序、十组单测与 P1 echo 验收服务
 ├── config/                 # server.conf（可提交）+ secrets.conf（600，已 gitignore）
 ├── sql/schema.sql          # 9 张表的可重复建表脚本
 ├── docs/
@@ -118,7 +123,7 @@ CoFinance/
 │   ├── ai/                 # LLM 调用（P10）
 │   └── util/               # 配置、日志、通用工具
 ├── tests/
-│   ├── unit/                # P0-P8 单元测试
+│   ├── unit/                # P0-P9 单元测试
 │   └── integration/         # 真实服务验收与 P1 echo 测试服务
 ├── www/                    # 静态文件根目录（P2 先放占位首页，P11 扩展前端）
 └── third_party/            # 第三方单头库（如需 vendor）
@@ -259,3 +264,16 @@ CoFinance/
 - 可观测性：需要登录的 `GET /api/metrics` 返回 `pending_polls`，压测脚本用它确认连接真正进入挂起态。
 
 本机 P8 实测：`cofinance_chat_tests` 80 个检查点通过；CTest 9/9；真实 HTTP 全流程通过；2000 条并发挂起全部登记约 `504ms`，2000/2000 全部送达，完整耗时约 `177ms`；POST 返回约 `19.9ms`，首条响应在 POST 返回后约 `13.9ms` 可读到，即从发起发送到首条送达约 `34ms`，满足 V3 的 100ms 目标。P1 的 1000 连接回显、P2/P4–P7 真实 HTTP 回归全部通过；Valgrind 版 P8 HTTP 验收退出码为 `0`。
+
+## 已实现的技术要点（P9）
+
+- 独立 Upgrade 路由：HTTP 只为 `/api/ws` 做鉴权与握手，成功后发送原始 `101 Switching Protocols`，同一次 read 中剩余的帧字节原样交给 WebSocket 会话，不再进入 HTTP 解析器。
+- RFC 6455 帧层：客户端帧强制掩码；支持 7/16/64 位长度、半包/粘包、文本分片、UTF-8 校验、控制帧 FIN 与 125 字节限制；二进制消息返回 `1003`。
+- 心跳与关闭：服务端每 30s 发 Ping，客户端 Pong 刷新活跃时间；90s 无入站活动返回 `1001`；关闭帧、对端断开、发送失败只触发一次清理。
+- 实时订阅表：按用户、组、全局三级限额；消息提交后同时唤醒长轮询与 WebSocket；成员退出、被移除、组解散后立即注销对应订阅。
+- 跨线程安全：数据库/业务线程只能把推送任务投递回连接所属 `EventLoop`，实际 socket 写入始终在连接线程执行。
+- 浏览器接入：`GET /api/ws?token=<token>&group_id=<id>`，连接后先收到 `{"type":"ready","server_max_id":N}`；支持 `send`、`read`、`ping`，以及服务端 `message`/`ack`/`read`/`error` 事件。
+- 不丢消息：断线期间的消息由客户端重连后调用 HTTP `GET /api/groups/{gid}/messages?after_id=...` 补拉；WebSocket 只负责低延迟推送，不作为唯一持久化通道。
+- 配置：`server.ws_max_message_bytes`、`ws_heartbeat_interval_ms`、`ws_idle_timeout_ms`、`ws_max_per_user`、`ws_max_per_group`、`ws_max_total` 均有安全默认值。
+
+本机 P9 实测：`cofinance_ws_tests` 80 个检查点通过；CTest 10/10；真实 WebSocket 握手、HTTP→WS 推送、WS→HTTP 落库、分片文本、Ping/Pong、关闭、断线补拉、成员移除清理全部通过；单次 HTTP 发消息到 WS 收到推送约 `7.1ms`；P1、P2、P4–P8 集成回归通过；Valgrind 版 P9 验收 `0 errors`。

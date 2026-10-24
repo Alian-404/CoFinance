@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "cofinance/api/ApiSupport.h"
+#include "cofinance/api/MessageJson.h"
 #include "cofinance/http/HttpServer.h"
 #include "cofinance/service/ChatService.h"
 #include "cofinance/service/UserService.h"
@@ -29,31 +30,7 @@ using service::PollSnapshot;
 using service::ServiceError;
 using service::UnreadState;
 using service::UserService;
-
-json messageJson(const db::MessageRecord& message) {
-    json client_msg_id = nullptr;
-    if (message.client_msg_id.has_value()) {
-        client_msg_id = *message.client_msg_id;
-    }
-    std::string sender_name = message.sender_nickname;
-    if (sender_name.empty()) {
-        sender_name = message.sender_username;
-    }
-    if (message.sender_id == 0) {
-        sender_name = "系统";
-    }
-    return json{{"id", message.id},
-                {"group_id", message.group_id},
-                {"sender_id", message.sender_id},
-                {"sender_username", message.sender_username},
-                {"sender_nickname", message.sender_nickname},
-                {"sender_avatar_url", message.sender_avatar_url},
-                {"sender_name", std::move(sender_name)},
-                {"type", message.type},
-                {"content", message.content},
-                {"client_msg_id", std::move(client_msg_id)},
-                {"created_at", message.created_at}};
-}
+using detail::messageJson;
 
 json messageListJson(const std::vector<db::MessageRecord>& records) {
     json items = json::array();
@@ -314,7 +291,8 @@ void ChatApi::registerRoutes(http::HttpServer& server, UserService& users, ChatS
             return error;
         }
         return support::jsonResult(200, 0, "ok",
-                                   json{{"pending_polls", chat.pendingPolls()}});
+                                   json{{"pending_polls", chat.pendingPolls()},
+                                        {"realtime_connections", chat.realtimeConnections()}});
     });
 
     server.addRoute("POST", "/api/groups/{gid}/messages",

@@ -28,6 +28,37 @@ void Router::addAsync(std::string method, std::string pattern, AsyncHandler hand
     routes_.push_back(std::move(route));
 }
 
+void Router::addUpgrade(std::string pattern, UpgradeHandler handler) {
+    UpgradeRoute route;
+    route.segments = splitPath(pattern);
+    route.handler = std::move(handler);
+    upgrade_routes_.push_back(std::move(route));
+}
+
+std::optional<UpgradeDecision> Router::dispatchUpgrade(
+    HttpRequest& request, const UpgradeContext& context) const {
+    if (request.method != "GET") {
+        return std::nullopt;
+    }
+    const std::vector<std::string> actual = splitPath(request.path);
+    for (const UpgradeRoute& route : upgrade_routes_) {
+        if (!matchSegments(route.segments, actual, &request)) {
+            continue;
+        }
+        try {
+            return route.handler(request, context);
+        } catch (const std::exception& e) {
+            LOG_ERROR("HTTP Upgrade 路由异常 %s: %s", request.path.c_str(), e.what());
+        } catch (...) {
+            LOG_ERROR("HTTP Upgrade 路由未知异常 %s", request.path.c_str());
+        }
+        UpgradeDecision decision;
+        decision.rejection = HttpResponse::text(500, "Internal Server Error\n");
+        return decision;
+    }
+    return std::nullopt;
+}
+
 DispatchResult Router::dispatch(HttpRequest& request, const AsyncContext& context) const {
     const std::vector<std::string> actual = splitPath(request.path);
     std::set<std::string> allowed;

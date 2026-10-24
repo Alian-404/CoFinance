@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -16,7 +17,13 @@ namespace service {
 
 class GroupService : private NonCopyable {
 public:
+    using RealtimeMemberRevoke = std::function<void(std::uint64_t, std::uint64_t)>;
+    using RealtimeGroupRevoke = std::function<void(std::uint64_t)>;
+
     explicit GroupService(db::ConnectionPool& pool);
+
+    void setRealtimeRevokeCallbacks(RealtimeMemberRevoke member_revoke,
+                                    RealtimeGroupRevoke group_revoke);
 
     bool createGroup(std::uint64_t user_id, const std::string& name, db::GroupRecord* group,
                      ServiceError* error);
@@ -51,7 +58,12 @@ public:
                        std::uint64_t target_user_id, ServiceError* error);
 
 private:
+    void notifyMemberRevoked(std::uint64_t group_id, std::uint64_t user_id) noexcept;
+    void notifyGroupRevoked(std::uint64_t group_id) noexcept;
+
     db::ConnectionPool& pool_;
+    RealtimeMemberRevoke realtime_member_revoke_;
+    RealtimeGroupRevoke realtime_group_revoke_;
 };
 
 }  // namespace service

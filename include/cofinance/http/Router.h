@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -9,6 +10,13 @@
 
 #include "cofinance/http/HttpTypes.h"
 #include "cofinance/util/Common.h"
+
+namespace cofinance {
+namespace net {
+class TcpConnection;
+using TcpConnectionPtr = std::shared_ptr<TcpConnection>;
+}
+}
 
 namespace cofinance {
 namespace http {
@@ -30,17 +38,31 @@ struct DispatchResult {
     HttpResponse response;
 };
 
+struct UpgradeContext {
+    net::TcpConnectionPtr connection;
+    std::string* pending_input = nullptr;
+};
+
+struct UpgradeDecision {
+    bool switched = false;
+    HttpResponse rejection;
+};
+
 // 路由表只在启动阶段写入，运行期只读；因此多个 IO worker 可以并发 dispatch。
 class Router : private NonCopyable {
 public:
     using Handler = std::function<HttpResponse(const HttpRequest&)>;
     using AsyncHandler = std::function<void(HttpRequest&, const AsyncContext&)>;
+    using UpgradeHandler = std::function<UpgradeDecision(HttpRequest&, const UpgradeContext&)>;
 
     void add(std::string method, std::string pattern, Handler handler);
     void addAsync(std::string method, std::string pattern, AsyncHandler handler);
+    void addUpgrade(std::string pattern, UpgradeHandler handler);
 
     DispatchResult dispatch(HttpRequest& request, const AsyncContext& context) const;
     std::optional<HttpResponse> dispatch(HttpRequest& request) const;
+    std::optional<UpgradeDecision> dispatchUpgrade(HttpRequest& request,
+                                                    const UpgradeContext& context) const;
 
 private:
     struct Route {
@@ -50,12 +72,18 @@ private:
         AsyncHandler async_handler;
     };
 
+    struct UpgradeRoute {
+        std::vector<std::string> segments;
+        UpgradeHandler handler;
+    };
+
     static std::vector<std::string> splitPath(const std::string& path);
     static bool matchSegments(const std::vector<std::string>& pattern,
                               const std::vector<std::string>& actual,
                               HttpRequest* request);
 
     std::vector<Route> routes_;
+    std::vector<UpgradeRoute> upgrade_routes_;
 };
 
 }  // namespace http

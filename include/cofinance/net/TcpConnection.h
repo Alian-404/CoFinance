@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "cofinance/net/EventLoop.h"
 #include "cofinance/util/Common.h"
@@ -27,7 +28,9 @@ public:
     bool start(std::string* err);
     void setMessageCallback(MessageCallback cb) { message_cb_ = std::move(cb); }
     void setCloseCallback(CloseCallback cb) { close_cb_ = std::move(cb); }
+    void addCloseCallback(CloseCallback cb) { close_cbs_.push_back(std::move(cb)); }
     void setInputLimit(std::size_t bytes) noexcept { max_input_bytes_ = bytes; }
+    void setIdleTimeoutMs(int timeout_ms);
 
     void send(std::string_view data);
     void runInLoop(std::function<void()> task);
@@ -63,6 +66,7 @@ private:
 
     MessageCallback message_cb_;
     CloseCallback close_cb_;
+    std::vector<CloseCallback> close_cbs_;
     TimerQueue::TimerId idle_timer_id_ = 0;
     std::uint32_t interest_ = 0;
     bool registered_ = false;
