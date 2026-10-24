@@ -499,6 +499,7 @@ CREATE TABLE settlements (
 | api | 参数解析与校验、调用 service、序列化 | 各 Controller、统一响应封装、错误码映射 |
 | util | 配置、日志、JSON、字符串、时间、加密 | Config、Logger、Json、Crypto、TimeUtil |
 | ai | 外部大模型调用与降级 | LlmClient(libcurl)、PromptBuilder、专用线程池 |
+| web | 浏览器单页与交互 | 原生 ES Modules、hash 路由、视图 cleanup、WebSocket/长轮询客户端 |
 
 设计要点：Controller 里不允许出现 SQL；Service 里不允许出现 HTTP 相关类型；DAO 只返回结构体，不返回 JSON。
 
@@ -586,6 +587,20 @@ CREATE TABLE settlements (
 - 请求约束：请求体 ≤1MB、头部 ≤8KB、解析与读超时 10s、单 IP 连接数上限，抵御 Slowloris 类慢速攻击。
 - 后台清理（挂在主 loop 的定时任务，不占业务线程）：过期 sessions 清理、超过 7 天的待接受邀请置为过期（status=5）、孤儿长轮询登记回收。
 - 登录失败计数：同一用户名 / IP 连续失败 10 次锁定 5 分钟，配合 PBKDF2 的天然耗时抵御在线爆破。
+
+### 5.9 前端架构（P11）
+
+- 交付形态：一个 `www/index.html` 作为入口，CSS、SVG 和 ES Modules 都是静态资源，由现有 C++ HTTP 服务直接托管；不引入 React/Vue、npm 运行时或打包器，面试演示只需启动一个进程。
+- 分层：`core/` 只放跨页面能力（API、DOM 转义、路由、格式化、会话、状态、弹窗），`views/` 按登录、组列表、概览、账本、聊天、设置拆分。视图通过参数拿依赖，不直接保存全局连接。
+- 路由：使用 hash 路由，服务端无需为每个页面配置 history fallback。路径固定为 `#/login`、`#/register`、`#/groups` 和 `#/groups/{gid}/{overview|ledger|chat|settings}`；未知标签回落到概览，未知路径显示 404。
+- 页面生命周期：路由切换先调用旧视图的 `cleanup()`，再挂载新视图。聊天页在 cleanup 中停止长轮询、关闭 WebSocket、abort 历史和 AI 请求；设置页移除滚动监听和未执行的动画帧，防止旧页面继续修改 DOM。
+- 请求层：统一封装 JSON、Bearer token、超时和 `AbortSignal`，把非 2xx 统一变成带错误码的 `ApiError`；401 会清理登录态并跳回登录页。
+- 安全渲染：模板函数对插值默认做 HTML 转义，只有 `SafeHtml` 片段可绕过；入口 CSP 仅允许同源脚本/样式、同源 HTTP/WS 连接和本地 data 图片，禁止内联脚本、对象与外部脚本源。
+- 凭证：token 存在 `localStorage`，刷新后仍可恢复会话。该选择实现简单、便于本地演示，但会放大 XSS 后果；当前用默认转义与 CSP 收敛风险，生产环境可改为 HttpOnly Cookie + CSRF 防护。
+- 实时降级：聊天优先建立同源 WebSocket；握手失败、断线或心跳超时后切到 `GET /messages/poll`。长轮询用重叠窗口（当前最大 id 向前退 20）补偿自增 id 提交乱序，再按消息 id 去重。
+- 数值与时间：金额输入只接受最多两位小数并转整数分；均摊允许 0 分，但普通交易金额必须大于 0。服务端不带时区的时间统一按 UTC 解释，展示时再本地化。
+- 设置页信息架构：分区导航包含组资料、成员与邀请、分类管理、账号与安全、危险操作。成员区同时展示成员列表和“我收到的待处理邀请”；危险操作把退出/解散、转让/移除、注销账号放在明确确认流程后。
+- 响应式：桌面为固定侧栏 + 内容区，移动端侧栏改为抽屉；设置导航横向滚动，成员、邀请和危险操作在窄屏改为可换行布局，避免按钮挤压正文。
 
 ## 6. API 设计
 
@@ -717,7 +732,7 @@ CREATE TABLE settlements (
 | 日志 | 自研异步日志 | 双缓冲或阻塞队列 |
 | 测试 | doctest（单头）+ bash/curl 集成脚本 + ASan/UBSan/TSan | |
 | 压测 | wrk + 自写长轮询客户端 | 记录实测数据进 README |
-| 前端 | 原生 HTML/CSS/JS 单页 | 无框架，登录/组列表/账本/聊天四个页面 |
+| 前端 | 原生 HTML/CSS/JS 单页 | 无框架、无打包步骤；登录/组列表/概览/账本/聊天/设置 |
 | 环境 | WSL2 Ubuntu + MySQL 8.0 + g++ 13 | |
 
 ## 8. 工程结构
@@ -733,11 +748,7 @@ CoFinance/
 │   ├── schema.sql             # 建表脚本
 │   └── seed_categories.sql    # 预置分类
 ├── docs/
-│   ├── design.md              # 架构与模块设计
-│   ├── api.md                 # 接口文档
-│   ├── learning/              # 每阶段原理笔记（PN-xx-*.md）
-│   ├── BUGLOG.md              # 踩坑与 bug 记录（必做）
-│   └── interview.md           # 面试问答整理
+│   └── design.md              # 架构、需求基线与接口设计
 ├── include/cofinance/         # 对外头文件
 ├── src/
 │   ├── main.cpp
@@ -750,9 +761,18 @@ CoFinance/
 │   ├── ai/                    # LlmClient, PromptBuilder
 │   └── util/                  # Config, Logger, Json, Crypto, TimeUtil
 ├── tests/
+│   ├── frontend/              # DOM 无关的纯函数测试
 │   ├── unit/                  # P0-P10 单元测试
-│   └── integration/           # bash + curl 脚本
-├── www/                       # 前端静态文件
+│   └── integration/           # 真实服务 Python/HTTP 验收
+├── www/
+│   ├── index.html             # 唯一入口与 CSP
+│   └── assets/
+│       ├── css/app.css        # 视觉系统与响应式
+│       ├── avatars/           # 预置 SVG
+│       └── js/
+│           ├── app.js         # 路由与页面生命周期
+│           ├── core/          # API、路由、DOM、格式化、状态
+│           └── views/         # 各业务页面
 └── third_party/               # nlohmann/json、doctest（vendored，注明版本与许可）
 ```
 

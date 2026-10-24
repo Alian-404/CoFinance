@@ -3,12 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CoFinance</title>
+  <meta name="theme-color" content="#f3efe4">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <title>CoFinance · 一起把账算清楚</title>
+  <link rel="icon" href="/assets/avatars/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/css/app.css">
 </head>
 <body>
-  <main>
-    <h1>CoFinance</h1>
-    <p>HTTP 层已就绪。接口探针：<code>GET /api/ping</code></p>
-  </main>
+  <div id="app" class="app-root">
+    <div class="boot-screen" role="status" aria-live="polite">
+      <span class="brand-mark" aria-hidden="true">C</span>
+      <p>正在打开账本…</p>
+    </div>
+  </div>
+  <div id="modal-root" class="modal-root" aria-live="polite"></div>
+  <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="false"></div>
+  <noscript>CoFinance 需要启用 JavaScript 才能使用。</noscript>
+  <script type="module" src="/assets/js/app.js"></script>
 </body>
 </html>

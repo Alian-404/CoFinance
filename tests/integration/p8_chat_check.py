@@ -157,7 +157,17 @@ def read_http_json(sock: socket.socket) -> tuple[int, dict]:
     return status, json.loads(body)
 
 
-def run_stress(port: int, token: str, group_id: int, count: int) -> None:
+def server_rss_kb(pid: int) -> int | None:
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1])
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    return None
+
+
+def run_stress(port: int, token: str, group_id: int, count: int, server_pid: int) -> None:
     print(f"[stress] 建立 {count} 条长轮询挂起连接...")
     client = Client(port, timeout=30)
     history = expect(
@@ -192,6 +202,9 @@ def run_stress(port: int, token: str, group_id: int, count: int) -> None:
             raise AssertionError(f"长轮询未全部登记: {metrics['data']}")
         registration_ms = (time.monotonic() - registered_start) * 1000
         print(f"[stress] {count} 条已全部登记，耗时 {registration_ms:.1f}ms")
+        rss_kb = server_rss_kb(server_pid)
+        if rss_kb is not None:
+            print(f"[stress] {count} 条挂起时服务端 RSS {rss_kb / 1024:.1f} MiB")
         print("[stress] 全部请求已发送，触发一条新消息")
         started = time.monotonic()
         sent = expect(
@@ -651,7 +664,7 @@ def main() -> int:
         assert "unread_count" in summary and summary["unread_count"] >= 1
 
         if stress:
-            run_stress(port, tokens[0], group_id, stress)
+            run_stress(port, tokens[0], group_id, stress, proc.pid)
 
         print(f"P8 HTTP 验收通过：用户={len(user_ids)} 组={len(group_ids)}")
         return 0

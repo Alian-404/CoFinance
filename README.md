@@ -20,7 +20,7 @@
 | P8 | 聊天 + 长轮询 | ✅ 已完成（80 个检查点，2000 并发挂起，valgrind 0 errors） |
 | P9 | WebSocket 升级 | ✅ 已完成（80 个检查点，CTest 10/10，真实推送 7.1ms） |
 | P10 | AI 助手（DeepSeek） | ✅ 已完成（57 个检查点，CTest 11/11，慢模型不阻塞 IO） |
-| P11 | 前端整合 + 压测 + 文档收尾 | ⬜ |
+| P11 | 前端整合 + 压测 + 文档收尾 | ✅ 已完成（133 个检查点，CTest 11/11，设置页全功能） |
 
 ## 构建与运行
 
@@ -43,6 +43,9 @@ cmake --build build -j16
 
 # 运行
 ./build/cofinance -c config/server.conf
+
+# 浏览器打开（前端由同一个 C++ 服务直接托管，无需 npm 安装或打包）
+# http://localhost:9006/
 ```
 
 ## 测试
@@ -60,6 +63,9 @@ cmake --build build -j16
 ./build/cofinance_ws_tests                 # P9：握手/帧/分片/心跳/订阅表 80 个检查点
 ./build/cofinance_ai_tests config/server.conf sql/schema.sql # P10：prompt/超时/限流/缓存/取消 57 个检查点
 ctest --test-dir build                     # 通过 CTest 运行十一组单测（需 MySQL）
+
+# P11 前端纯函数测试：金额、时间、消息合并、路由、UUID、本地日期区间
+node --test tests/frontend/test_frontend.mjs
 
 # P1 集成验收（脚本自动创建临时端口、1000 条连接、回显、CPU 与优雅退出）
 ulimit -n 65535
@@ -92,6 +98,9 @@ python3 tests/integration/p9_ws_check.py
 # P10 集成验收（本地 mock DeepSeek；prompt 脱敏、缓存、超时、限流、异步隔离）
 python3 tests/integration/p10_ai_check.py
 
+# P11 集成验收（静态资源/MIME/CSP/模块依赖 + 设置页全部业务链路）
+python3 tests/integration/p11_frontend_check.py --binary build-nosan/cofinance
+
 # 泄漏检查（ASan 与 valgrind 不能同时启用，故单独一个构建目录）
 cmake -S . -B build-nosan -DCOFINANCE_SANITIZE=OFF && cmake --build build-nosan -j16
 python3 tests/integration/p1_echo_check.py --binary build-nosan/cofinance_echo_server \
@@ -113,7 +122,7 @@ valgrind --leak-check=full --show-leak-kinds=definite,indirect \
 
 ```
 CoFinance/
-├── CMakeLists.txt          # 核心库、主程序、十组单测与 P1 echo 验收服务
+├── CMakeLists.txt          # 核心库、主程序、十一组单测与 P1 echo 验收服务
 ├── config/                 # server.conf（可提交）+ secrets.conf（600，已 gitignore）
 ├── sql/schema.sql          # 9 张表的可重复建表脚本
 ├── docs/
@@ -128,9 +137,18 @@ CoFinance/
 │   ├── ai/                 # LLM 调用（P10）
 │   └── util/               # 配置、日志、通用工具
 ├── tests/
+│   ├── frontend/            # 前端纯函数 Node 测试
 │   ├── unit/                # P0-P10 单元测试
 │   └── integration/         # 真实服务验收与 P1 echo 测试服务
-├── www/                    # 静态文件根目录（P2 先放占位首页，P11 扩展前端）
+├── www/                     # 单页前端（原生 HTML/CSS/ES Modules，无构建步骤）
+│   ├── index.html           # 唯一 HTML 入口、CSP、启动骨架
+│   └── assets/
+│       ├── css/app.css      # 温暖纸张 + 墨绿视觉系统与响应式布局
+│       ├── avatars/         # 预置 SVG 头像
+│       └── js/
+│           ├── app.js       # 路由装配、登录态与页面生命周期
+│           ├── core/        # API、DOM 转义、路由、格式化、弹窗和状态
+│           └── views/       # 登录、组列表、概览、账本、聊天、设置
 └── third_party/            # 第三方单头库（如需 vendor）
 ```
 
@@ -294,3 +312,16 @@ CoFinance/
 - 注入防护：系统提示把问题、昵称和分类名都声明为数据，并以 JSON 传入；模型被要求只依据聚合数据回答、不泄露系统提示与配置。
 
 本机 P10 实测：`cofinance_ai_tests` 57 个检查点通过；CTest 11/11；真实 HTTP + 本地 mock LLM 完成提问、建议缓存、越权、无效参数、上游 500/坏 JSON/超大响应、600ms 超时、客户端断开取消和每用户限流验收；mock 提问端到端约 `9ms`，LLM 慢请求期间 `/api/ping` 约 `1.0ms`；P2、P4–P9 集成回归通过；Valgrind 版 P10 验收以 `--error-exitcode=9` 通过。
+
+## 已实现的技术要点（P11）
+
+- 单页结构：唯一的 `index.html` + 原生 ES Modules，无框架、无 npm 运行时、无打包步骤；C++ 静态文件服务直接托管 `www/`。
+- 路由：hash 路由把地址映射为登录/注册、组列表和工作区的 `overview|ledger|chat|settings` 标签；不存在的路径显式落到 404 页面。
+- 安全渲染：模板插值默认 HTML 转义，仅显式标记的安全片段可原样渲染；入口声明 CSP，禁止内联脚本、对象和外部脚本来源。
+- 金额与时间：前端只解析为整数分，服务端无时区时间按 UTC 解释；金额展示用 `Intl.NumberFormat`，避免浮点累加和时区偏移。
+- 实时聊天：WebSocket 优先，连接不可用或断开后退回带重叠窗口的长轮询；HTTP 历史按 id 去重合并，重连指数退避上限 15 秒。
+- 生命周期：每个视图返回 `cleanup()`；切页、退出登录、收到 401 时取消在途请求、停止轮询、关闭 WebSocket，避免旧页面继续写 DOM。
+- 设置页：组资料、成员/邀请（含收到的邀请）、分类、个人资料/预置头像、修改密码、退出当前/全部设备、退出/解散组、转让 owner、移除成员、注销账号。
+- 视觉与适配：温暖纸张底色、墨绿主色、衬线标题、卡片式信息层级；桌面侧栏与移动端抽屉共用同一套页面结构。
+
+本机 P11 实测：前端纯函数 9 项通过；P11 集成 133 个检查点通过；CTest 11/11；静态页 `wrk -t4 -c100 -d10s` 为 `33,974.86 QPS`，p50 `2.72ms`、p99 `21.90ms`，343,154 请求无错误；登录态 `GET /stats` 为 `1,282.80 QPS`，p50 `37.14ms`、p99 `43.14ms`；长轮询 2000 条挂起时 RSS `45.7 MiB`，POST `18.0ms`，首条推送 `5.4ms`，全部送达 `66.2ms`。
